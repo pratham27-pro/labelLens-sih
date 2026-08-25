@@ -1,0 +1,29 @@
+# Internal planning doc (not for the repo)
+ISSUES.md
+CLAUDE.md
+
+# Python / uv (server)
+server/.venv/
+server/__pycache__/
+**/__pycache__/
+*.pyc
+server/*.db
+server/storage/uploads/
+server/storage/reports/
+.env
+
+# Node / Expo (app) and Vite (web)
+node_modules/
+.expo/
+dist/
+build/
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+graphify-out/
