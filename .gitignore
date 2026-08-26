@@ -1,16 +1,29 @@
-# Internal planning doc (not for the repo)
+# Internal planning doc
 ISSUES.md
 CLAUDE.md
 
 # Python / uv (server)
 server/.venv/
+.venv/
 server/__pycache__/
+__pycache__/
 **/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
 *.pyc
 server/*.db
+*.db
 server/storage/uploads/
 server/storage/reports/
+server/scratch/
+scratch/
 .env
+server/.env
+**/.env
+
+# RapidOCR / ONNX Models & Cached Weights
+*.onnx
+.rapidocr/
 
 # Node / Expo (app) and Vite (web)
 node_modules/

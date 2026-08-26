@@ -1,9 +1,33 @@
 [project]
 name = "server"
 version = "0.1.0"
-description = "Add your description here"
+description = "LabelLens Backend API & Rule Validation Engine"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.141.1",
+    "flatbuffers>=25.12.19",
+    "httpx>=0.28.1",
+    "numpy>=2.4.6",
+    "onnxruntime>=1.29.0",
+    "opencv-python>=5.0.0.93",
+    "packaging>=26.3",
+    "pillow>=12.3.0",
+    "protobuf>=7.36.0",
+    "psycopg2-binary>=2.9.12",
+    "pyclipper>=1.4.0",
+    "pydantic>=2.11.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "python-dotenv>=1.2.3",
+    "python-multipart>=0.0.20",
+    "rapidocr-onnxruntime>=1.4.4",
+    "shapely>=2.1.2",
+    "six>=1.17.0",
+    "sqlalchemy>=2.0.52",
+    "tqdm>=4.70.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
