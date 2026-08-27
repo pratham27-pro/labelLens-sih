@@ -8,6 +8,7 @@ from database import engine, get_db, init_db
 from services.rule_loader import sync_rules_to_db
 from routers.ocr import router as ocr_router
 from routers.compliance import router as compliance_router
+from routers.uploads import router as uploads_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,6 +37,7 @@ app.add_middleware(
 # Register Routers
 app.include_router(ocr_router)
 app.include_router(compliance_router)
+app.include_router(uploads_router)
 
 
 @app.get("/", tags=["Health"])
