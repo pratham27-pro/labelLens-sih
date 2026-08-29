@@ -5,6 +5,8 @@ CLAUDE.md
 # Python / uv (server)
 server/.venv/
 .venv/
+video_outputs/
+server/checkpoints/*.pt
 server/__pycache__/
 __pycache__/
 **/__pycache__/
