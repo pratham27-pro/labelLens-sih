@@ -63,17 +63,19 @@ class ComplianceEvaluator:
                 found_declarations.append(decl)
                 violations.extend(viols)
 
+            # Check Consumer Care Details (checked before Manufacturer Details: a consumer-care
+            # line's email domain often echoes the brand name, e.g. "help@haldiram.com", which
+            # would otherwise false-match the manufacturer's brand-name keywords first)
+            elif self._is_consumer_care(text):
+                matched_rule_ids.add("consumer_care")
+                decl, viols = self._eval_consumer_care(block)
+                found_declarations.append(decl)
+                violations.extend(viols)
+
             # Check Manufacturer Details
             elif self._is_manufacturer_details(text):
                 matched_rule_ids.add("manufacturer_details")
                 decl, viols = self._eval_manufacturer_details(block)
-                found_declarations.append(decl)
-                violations.extend(viols)
-
-            # Check Consumer Care Details
-            elif self._is_consumer_care(text):
-                matched_rule_ids.add("consumer_care")
-                decl, viols = self._eval_consumer_care(block)
                 found_declarations.append(decl)
                 violations.extend(viols)
 

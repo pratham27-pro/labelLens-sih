@@ -1,4 +1,5 @@
 import base64
+import logging
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, File, UploadFile, Query, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -10,6 +11,8 @@ from services.compliance_evaluator import evaluate_label_compliance
 from services.rule_loader import load_rules_from_file, sync_rules_to_db
 from database import get_db
 from models import Inspection, Violation, Product
+
+logger = logging.getLogger("compliance_router")
 
 router = APIRouter(prefix="/api/v1/compliance", tags=["Compliance Evaluation Engine"])
 
@@ -35,7 +38,7 @@ async def evaluate_image_compliance(
     min_confidence: float = Query(default=0.3, ge=0.0, le=1.0, description="Minimum OCR confidence threshold"),
     db: Session = Depends(get_db)
 ):
-    if not file.content_type.startswith("image/"):
+    if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid file type '{file.content_type}'. Must be an image file."
@@ -89,6 +92,9 @@ async def evaluate_image_compliance(
             db.commit()
 
         except Exception as db_err:
+            logger.exception(
+                "Failed to persist inspection/violations for compliance evaluation: %s", db_err
+            )
             db.rollback()
 
         return compliance_result
