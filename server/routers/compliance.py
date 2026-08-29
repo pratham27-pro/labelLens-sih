@@ -8,7 +8,7 @@ from schemas.compliance import ComplianceResult
 from schemas.ocr import OCRScanResult
 from services.ocr_service import get_ocr_service
 from services.compliance_evaluator import evaluate_label_compliance
-from services.rule_loader import load_rules_from_file, sync_rules_to_db
+from services.rule_loader import load_rules_from_file, sync_rules_to_db, get_rules_from_db
 from database import get_db
 from models import Inspection, Violation, Product
 
@@ -19,10 +19,10 @@ router = APIRouter(prefix="/api/v1/compliance", tags=["Compliance Evaluation Eng
 @router.get(
     "/rules",
     summary="Get active Legal Metrology mandatory declarations ruleset",
-    description="Returns rules list loaded from rules.json or database."
+    description="Returns active rules list dynamically loaded from database compliance_rules table."
 )
 def get_active_rules(db: Session = Depends(get_db)):
-    rules_data = load_rules_from_file()
+    rules_data = get_rules_from_db(db=db)
     return rules_data
 
 
@@ -30,7 +30,7 @@ def get_active_rules(db: Session = Depends(get_db)):
     "/evaluate-image",
     response_model=ComplianceResult,
     summary="End-to-end Legal Metrology compliance evaluation from label photo upload",
-    description="Runs OCR extraction (Task #4), evaluates Legal Metrology rules (Task #6), logs inspection in DB, and returns structured result (what was found, missing, wrong, pass/fail)."
+    description="Runs OCR extraction, evaluates active Legal Metrology DB rules, logs inspection in DB, and returns structured result."
 )
 async def evaluate_image_compliance(
     file: UploadFile = File(..., description="Packaged product label photo"),
@@ -61,9 +61,9 @@ async def evaluate_image_compliance(
         if not ocr_result.success:
             raise HTTPException(status_code=500, detail=f"OCR Extraction failed: {ocr_result.error}")
 
-        # Step 2: Run Task #6 Compliance Evaluator Engine
-        ruleset = load_rules_from_file()
-        compliance_result = evaluate_label_compliance(ocr_result, ruleset=ruleset)
+        # Step 2: Run Compliance Evaluator Engine with DB-driven rules
+        ruleset = get_rules_from_db(db=db)
+        compliance_result = evaluate_label_compliance(ocr_result, ruleset=ruleset, db=db)
 
         # Step 3: Persist Inspection Record and Violations to PostgreSQL / SQLite Database
         try:
@@ -112,9 +112,9 @@ async def evaluate_image_compliance(
     "/evaluate-ocr",
     response_model=ComplianceResult,
     summary="Evaluate Legal Metrology compliance from pre-computed OCR JSON output",
-    description="Takes raw OCRScanResult JSON output (Task #4) and evaluates against Legal Metrology ruleset (Task #6)."
+    description="Takes raw OCRScanResult JSON output and evaluates against Legal Metrology DB ruleset."
 )
-def evaluate_ocr_payload(ocr_result: OCRScanResult):
-    ruleset = load_rules_from_file()
-    result = evaluate_label_compliance(ocr_result, ruleset=ruleset)
+def evaluate_ocr_payload(ocr_result: OCRScanResult, db: Session = Depends(get_db)):
+    ruleset = get_rules_from_db(db=db)
+    result = evaluate_label_compliance(ocr_result, ruleset=ruleset, db=db)
     return result
