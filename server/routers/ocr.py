@@ -26,7 +26,7 @@ async def scan_label_image(
     min_confidence: float = Query(default=0.3, ge=0.0, le=1.0, description="Minimum OCR confidence threshold"),
     include_annotated_image: bool = Query(default=False, description="Return base64 annotated image with bounding boxes")
 ):
-    if not file.content_type.startswith("image/"):
+    if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid file type '{file.content_type}'. Must be an image file."
