@@ -135,6 +135,30 @@ class ComplianceEvaluator:
             whats_wrong=violations
         )
 
+        structured_result = {
+            "compliance_score": compliance_score,
+            "extracted_declarations": [
+                {
+                    "field": item.field_name,
+                    "value": item.extracted_text,
+                    "status": item.status,
+                    "confidence": item.confidence,
+                }
+                for item in found_declarations
+            ],
+            "violation_list": [
+                {
+                    "rule_id": item.rule_id,
+                    "severity": item.severity,
+                    "description": item.description,
+                    "field_name": item.field_name,
+                    "violation_type": item.violation_type,
+                }
+                for item in violations
+            ],
+            "final_status": "COMPLIANT" if overall_result == "PASS" else "NON_COMPLIANT",
+        }
+
         return ComplianceResult(
             overall_result=overall_result,
             compliance_score=compliance_score,
@@ -142,7 +166,8 @@ class ComplianceEvaluator:
             total_found=total_found_valid,
             summary=summary,
             processing_time_ms=processing_time,
-            annotated_image_base64=ocr_result.annotated_image_base64
+            annotated_image_base64=ocr_result.annotated_image_base64,
+            structured_result=structured_result,
         )
 
     # --- Entity Detection Helpers ---
