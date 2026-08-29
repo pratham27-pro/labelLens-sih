@@ -92,3 +92,119 @@ def test_create_and_retrieve_inspection_record():
 
     finally:
         db.close()
+
+
+def test_upload_image_uses_provided_public_id(monkeypatch):
+    """Cloudinary should accept a traceable public_id supplied by the app."""
+    import services.cloudinary_service as cloudinary_service
+
+    captured = {}
+
+    def fake_upload(image_bytes, folder, public_id, resource_type):
+        captured["public_id"] = public_id
+        return {"secure_url": "https://example.com/test.jpg", "public_id": public_id}
+
+    monkeypatch.setattr(cloudinary_service.os, "getenv", lambda key: {
+        "CLOUDINARY_CLOUD_NAME": "demo",
+        "CLOUDINARY_API_KEY": "123",
+        "CLOUDINARY_API_SECRET": "secret",
+    }.get(key))
+    monkeypatch.setattr(cloudinary_service.cloudinary, "config", lambda **kwargs: None)
+    monkeypatch.setattr(cloudinary_service.cloudinary.uploader, "upload", fake_upload)
+
+    result = cloudinary_service.upload_image(b"fake-bytes", "test.jpg", public_id="scan_abc-123")
+
+    assert result["public_id"] == "scan_abc-123"
+    assert captured["public_id"] == "scan_abc-123"
+
+
+def test_background_scan_uses_new_session_for_processing(monkeypatch):
+    """Background jobs must open their own DB session instead of reusing the request session."""
+    import services.cloudinary_service as cloudinary_service
+    from routers import uploads as uploads_module
+
+    class DummyOCRResult:
+        success = True
+        error = None
+        raw_text = "MRP Rs 250.00 (INCL. OF ALL TAXES)\nNET QTY 440 g"
+        text_blocks = []
+        model_dump = lambda self: {"raw_text": self.raw_text}
+
+    class DummyComplianceResult:
+        compliance_score = 96.0
+        overall_result = "PASS"
+        summary = type("Summary", (), {"what_was_found": [], "whats_wrong": []})()
+        structured_result = {
+            "compliance_score": 96.0,
+            "extracted_declarations": [{"field": "MRP", "value": "Rs 250.00", "status": "COMPLIANT"}],
+            "violation_list": [],
+            "final_status": "COMPLIANT",
+        }
+
+    def fake_upload(image_bytes, filename, public_id=None):
+        return {"secure_url": "https://example.com/label.jpg", "public_id": public_id or "scan_demo"}
+
+    monkeypatch.setattr(cloudinary_service, "upload_image", fake_upload)
+    monkeypatch.setattr(uploads_module, "get_ocr_service", lambda: type("OCR", (), {"extract_text": lambda self, *args, **kwargs: DummyOCRResult()})())
+    monkeypatch.setattr(uploads_module, "evaluate_label_compliance", lambda ocr_result, ruleset=None: DummyComplianceResult())
+    monkeypatch.setattr(uploads_module, "load_rules_from_file", lambda: {"mandatory_declarations": []})
+    monkeypatch.setattr(uploads_module, "SessionLocal", TestingSessionLocal)
+
+    db = TestingSessionLocal()
+    inspection = Inspection(status="PROCESSING")
+    db.add(inspection)
+    db.commit()
+    db.refresh(inspection)
+    db.close()
+
+    uploads_module._process_scan(inspection.id, b"fake-image")
+
+    db = TestingSessionLocal()
+    saved = db.get(Inspection, inspection.id)
+    db.close()
+
+    assert saved.status != "FAILED"
+
+
+def test_background_scan_handles_pydantic_structured_result(monkeypatch):
+    """Structured compliance objects should be converted to plain dicts before JSON storage."""
+    from routers import uploads as uploads_module
+    from schemas.compliance import StructuredComplianceResult
+
+    class DummyOCRResult:
+        success = True
+        error = None
+        raw_text = "MRP Rs 250.00 (INCL. OF ALL TAXES)"
+        text_blocks = []
+        model_dump = lambda self: {"raw_text": self.raw_text, "structured_compliance": {}}
+
+    class DummyComplianceResult:
+        compliance_score = 70.0
+        overall_result = "FAIL"
+        summary = type("Summary", (), {"what_was_found": [], "whats_wrong": []})()
+        structured_result = StructuredComplianceResult(
+            compliance_score=70.0,
+            extracted_declarations=[],
+            violation_list=[],
+            final_status="NON_COMPLIANT",
+        )
+
+    monkeypatch.setattr(uploads_module, "get_ocr_service", lambda: type("OCR", (), {"extract_text": lambda self, *args, **kwargs: DummyOCRResult()})())
+    monkeypatch.setattr(uploads_module, "evaluate_label_compliance", lambda ocr_result, ruleset=None: DummyComplianceResult())
+    monkeypatch.setattr(uploads_module, "load_rules_from_file", lambda: {"mandatory_declarations": []})
+    monkeypatch.setattr(uploads_module, "SessionLocal", TestingSessionLocal)
+
+    db = TestingSessionLocal()
+    inspection = Inspection(status="PROCESSING")
+    db.add(inspection)
+    db.commit()
+    db.refresh(inspection)
+    db.close()
+
+    uploads_module._process_scan(inspection.id, b"fake-image")
+
+    db = TestingSessionLocal()
+    saved = db.get(Inspection, inspection.id)
+    assert saved.status != "FAILED"
+    assert saved.raw_ocr_output["structured_compliance"]["final_status"] == "NON_COMPLIANT"
+    db.close()

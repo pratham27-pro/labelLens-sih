@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -8,6 +10,8 @@ from database import engine, get_db, init_db
 from services.rule_loader import sync_rules_to_db
 from routers.ocr import router as ocr_router
 from routers.compliance import router as compliance_router
+from routers.uploads import router as uploads_router
+from routers.video import router as video_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -24,6 +28,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+VIDEO_OUTPUT_DIR = Path(__file__).resolve().parent / "video_outputs"
+VIDEO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+app.mount(
+    "/video-files",
+    StaticFiles(directory=VIDEO_OUTPUT_DIR),
+    name="video-files",
+)
 # Configure CORS for Web & Mobile Clients
 app.add_middleware(
     CORSMiddleware,
@@ -36,7 +48,8 @@ app.add_middleware(
 # Register Routers
 app.include_router(ocr_router)
 app.include_router(compliance_router)
-
+app.include_router(uploads_router)
+app.include_router(video_router)
 
 @app.get("/", tags=["Health"])
 def read_root():

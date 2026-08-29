@@ -35,6 +35,20 @@ class ComplianceSummary(BaseModel):
     whats_missing: List[DeclarationMissing] = Field(..., description="List of missing mandatory declarations")
     whats_wrong: List[ViolationDetail] = Field(..., description="List of all non-compliance violations found")
 
+
+class StructuredComplianceResult(BaseModel):
+    compliance_score: float = Field(..., description="Compliance score percentage from 0.0 to 100.0")
+    extracted_declarations: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of extracted declaration entries with normalized field name, value, and status",
+    )
+    violation_list: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of violations with rule_id, severity, description, and evidence",
+    )
+    final_status: str = Field(..., description="COMPLIANT, NON_COMPLIANT, or FAILED")
+
+
 class ComplianceResult(BaseModel):
     overall_result: str = Field(..., description="'PASS' or 'FAIL'")
     compliance_score: float = Field(..., description="Compliance score percentage (0.0 to 100.0)")
@@ -43,3 +57,7 @@ class ComplianceResult(BaseModel):
     summary: ComplianceSummary = Field(..., description="Detailed breakdown: what was found, missing, and wrong")
     processing_time_ms: float = Field(..., description="Total processing time in milliseconds")
     annotated_image_base64: Optional[str] = Field(default=None, description="Optional base64 annotated evidence image")
+    structured_result: Optional[StructuredComplianceResult] = Field(
+        default=None,
+        description="Normalized structured output for downstream API/UI consumption",
+    )

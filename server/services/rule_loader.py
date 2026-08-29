@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from typing import List, Dict, Any
+from typing import Dict, Any
 from sqlalchemy.orm import Session
 
 from models.rule import ComplianceRule
@@ -23,6 +23,7 @@ def load_rules_from_file() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to parse rules.json: {e}")
         return get_default_ruleset()
+
 
 def get_default_ruleset() -> Dict[str, Any]:
     return {

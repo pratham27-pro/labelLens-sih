@@ -63,17 +63,19 @@ class ComplianceEvaluator:
                 found_declarations.append(decl)
                 violations.extend(viols)
 
+            # Check Consumer Care Details (checked before Manufacturer Details: a consumer-care
+            # line's email domain often echoes the brand name, e.g. "help@haldiram.com", which
+            # would otherwise false-match the manufacturer's brand-name keywords first)
+            elif self._is_consumer_care(text):
+                matched_rule_ids.add("consumer_care")
+                decl, viols = self._eval_consumer_care(block)
+                found_declarations.append(decl)
+                violations.extend(viols)
+
             # Check Manufacturer Details
             elif self._is_manufacturer_details(text):
                 matched_rule_ids.add("manufacturer_details")
                 decl, viols = self._eval_manufacturer_details(block)
-                found_declarations.append(decl)
-                violations.extend(viols)
-
-            # Check Consumer Care Details
-            elif self._is_consumer_care(text):
-                matched_rule_ids.add("consumer_care")
-                decl, viols = self._eval_consumer_care(block)
                 found_declarations.append(decl)
                 violations.extend(viols)
 
@@ -135,6 +137,30 @@ class ComplianceEvaluator:
             whats_wrong=violations
         )
 
+        structured_result = {
+            "compliance_score": compliance_score,
+            "extracted_declarations": [
+                {
+                    "field": item.field_name,
+                    "value": item.extracted_text,
+                    "status": item.status,
+                    "confidence": item.confidence,
+                }
+                for item in found_declarations
+            ],
+            "violation_list": [
+                {
+                    "rule_id": item.rule_id,
+                    "severity": item.severity,
+                    "description": item.description,
+                    "field_name": item.field_name,
+                    "violation_type": item.violation_type,
+                }
+                for item in violations
+            ],
+            "final_status": "COMPLIANT" if overall_result == "PASS" else "NON_COMPLIANT",
+        }
+
         return ComplianceResult(
             overall_result=overall_result,
             compliance_score=compliance_score,
@@ -142,7 +168,8 @@ class ComplianceEvaluator:
             total_found=total_found_valid,
             summary=summary,
             processing_time_ms=processing_time,
-            annotated_image_base64=ocr_result.annotated_image_base64
+            annotated_image_base64=ocr_result.annotated_image_base64,
+            structured_result=structured_result,
         )
 
     # --- Entity Detection Helpers ---

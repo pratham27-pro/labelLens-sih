@@ -24,7 +24,7 @@
       "description": "Maximum Retail Price inclusive of all taxes.",
       "required": true,
       "expected_format": "MRP Rs X.XX (incl. of all taxes) or ₹ X.XX",
-      "min_font_size_mm": 1.0
+      "min_font_size_mm": 1.0 
     },
     {
       "id": "manufacture_date",
