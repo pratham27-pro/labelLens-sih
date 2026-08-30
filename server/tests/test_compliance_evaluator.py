@@ -13,7 +13,7 @@ from main import app
 from database import Base, get_db
 from services.ocr_service import extract_text_from_image
 from services.compliance_evaluator import evaluate_label_compliance, ComplianceEvaluator
-from services.rule_loader import load_rules_from_file
+from services.rule_loader import get_rules_from_db
 
 TEST_SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 engine_test = create_engine(TEST_SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
@@ -32,6 +32,11 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def setup_database():
     Base.metadata.create_all(bind=engine_test)
+    # Seed rules into memory DB
+    db = TestingSessionLocal()
+    from services.rule_loader import sync_rules_to_db
+    sync_rules_to_db(db=db)
+    db.close()
     yield
     Base.metadata.drop_all(bind=engine_test)
 
@@ -41,8 +46,8 @@ def create_compliant_label_image() -> bytes:
     draw.text((30, 30), "MRP Rs 250.00 (INCL. OF ALL TAXES)", fill=(0, 0, 0))
     draw.text((30, 80), "NET QTY: 440 g", fill=(0, 0, 0))
     draw.text((30, 130), "MFG DATE: 08/2026", fill=(0, 0, 0))
-    draw.text((30, 180), "Mfd by: Haldiram Snacks Pvt Ltd, Noida - 201307", fill=(0, 0, 0))
-    draw.text((30, 230), "Consumer Care: 0120-2400286, help@haldiram.com", fill=(0, 0, 0))
+    draw.text((30, 180), "Mfd by: Acme Foods Pvt Ltd, Industrial Area - 110020", fill=(0, 0, 0))
+    draw.text((30, 230), "Consumer Care: 0120-2400286, help@acmefoods.com", fill=(0, 0, 0))
     draw.text((30, 280), "PRODUCT OF INDIA", fill=(0, 0, 0))
 
     buf = io.BytesIO()
@@ -65,8 +70,10 @@ def test_compliance_evaluator_compliant_label():
     img_bytes = create_compliant_label_image()
     ocr_res = extract_text_from_image(img_bytes)
     
-    ruleset = load_rules_from_file()
-    comp_res = evaluate_label_compliance(ocr_res, ruleset=ruleset)
+    db = TestingSessionLocal()
+    ruleset = get_rules_from_db(db=db)
+    comp_res = evaluate_label_compliance(ocr_res, ruleset=ruleset, db=db)
+    db.close()
 
     assert comp_res.total_declarations_required > 0
     assert len(comp_res.summary.what_was_found) > 0
@@ -78,8 +85,10 @@ def test_compliance_evaluator_non_compliant_label():
     img_bytes = create_non_compliant_label_image()
     ocr_res = extract_text_from_image(img_bytes)
     
-    ruleset = load_rules_from_file()
-    comp_res = evaluate_label_compliance(ocr_res, ruleset=ruleset)
+    db = TestingSessionLocal()
+    ruleset = get_rules_from_db(db=db)
+    comp_res = evaluate_label_compliance(ocr_res, ruleset=ruleset, db=db)
+    db.close()
 
     # Should detect violations (missing tax clause, illegal unit 'gms', missing mfg date)
     assert len(comp_res.summary.whats_wrong) > 0
@@ -103,3 +112,4 @@ def test_evaluate_image_api_endpoint():
     assert "what_was_found" in data["summary"]
     assert "whats_missing" in data["summary"]
     assert "whats_wrong" in data["summary"]
+

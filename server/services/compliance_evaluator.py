@@ -11,14 +11,14 @@ from schemas.compliance import (
     DeclarationMissing,
     ViolationDetail
 )
-from services.rule_loader import load_rules_from_file
+from services.rule_loader import get_rules_from_db
 
 logger = logging.getLogger("compliance_evaluator")
 
 class ComplianceEvaluator:
-    def __init__(self, ruleset: Optional[Dict[str, Any]] = None):
+    def __init__(self, ruleset: Optional[Dict[str, Any]] = None, db: Optional[Any] = None):
         if ruleset is None:
-            ruleset = load_rules_from_file()
+            ruleset = get_rules_from_db(db=db)
         self.ruleset = ruleset
         self.mandatory_rules = ruleset.get("mandatory_declarations", [])
 
@@ -37,6 +37,7 @@ class ComplianceEvaluator:
         violations: List[ViolationDetail] = []
 
         matched_rule_ids = set()
+        img_height = ocr_result.image_metadata.height
 
         # Step 1: Analyze every OCR text block against Legal Metrology entity matchers
         for block in ocr_result.text_blocks:
@@ -52,41 +53,39 @@ class ComplianceEvaluator:
             # Check Net Quantity
             elif self._is_net_quantity(text):
                 matched_rule_ids.add("net_quantity")
-                decl, viols = self._eval_net_quantity(block)
+                decl, viols = self._eval_net_quantity(block, img_height)
                 found_declarations.append(decl)
                 violations.extend(viols)
 
             # Check Manufacture Date
             elif self._is_mfg_date(text):
                 matched_rule_ids.add("manufacture_date")
-                decl, viols = self._eval_mfg_date(block)
+                decl, viols = self._eval_mfg_date(block, img_height)
                 found_declarations.append(decl)
                 violations.extend(viols)
 
-            # Check Consumer Care Details (checked before Manufacturer Details: a consumer-care
-            # line's email domain often echoes the brand name, e.g. "help@haldiram.com", which
-            # would otherwise false-match the manufacturer's brand-name keywords first)
+            # Check Consumer Care Details
             elif self._is_consumer_care(text):
                 matched_rule_ids.add("consumer_care")
-                decl, viols = self._eval_consumer_care(block)
+                decl, viols = self._eval_consumer_care(block, img_height)
                 found_declarations.append(decl)
                 violations.extend(viols)
 
             # Check Manufacturer Details
             elif self._is_manufacturer_details(text):
                 matched_rule_ids.add("manufacturer_details")
-                decl, viols = self._eval_manufacturer_details(block)
+                decl, viols = self._eval_manufacturer_details(block, img_height)
                 found_declarations.append(decl)
                 violations.extend(viols)
 
             # Check Country of Origin
             elif self._is_country_of_origin(text):
                 matched_rule_ids.add("country_of_origin")
-                decl, viols = self._eval_country_of_origin(block)
+                decl, viols = self._eval_country_of_origin(block, img_height)
                 found_declarations.append(decl)
                 violations.extend(viols)
 
-        # Step 2: Check Presence for all mandatory declarations defined in rules.json
+        # Step 2: Check Presence for all mandatory declarations defined in active ruleset
         for rule in self.mandatory_rules:
             rule_id = rule["id"]
             is_required = rule.get("required", True)
@@ -172,11 +171,11 @@ class ComplianceEvaluator:
             structured_result=structured_result,
         )
 
-    # --- Entity Detection Helpers ---
+    # --- Entity Detection Helpers (Brand-Agnostic & Fully Generalized) ---
 
     def _is_mrp(self, text: str) -> bool:
         t = text.upper()
-        return any(k in t for k in ["MRP", "MAXIMUM RETAIL PRICE", "INCL. OF ALL TAXES", "INCLUSIVE OF ALL TAXES"]) or (("RS" in t or "₹" in t) and re.search(r'\d+\.?\d*', t))
+        return any(k in t for k in ["MRP", "MAXIMUM RETAIL PRICE", "INCL. OF ALL TAXES", "INCLUSIVE OF ALL TAXES", "INCL OF ALL TAXES"]) or (("RS" in t or "₹" in t) and re.search(r'\d+\.?\d*', t))
 
     def _is_net_quantity(self, text: str) -> bool:
         t = text.upper()
@@ -184,19 +183,28 @@ class ComplianceEvaluator:
 
     def _is_mfg_date(self, text: str) -> bool:
         t = text.upper()
-        return any(k in t for k in ["MFG", "PKD", "MANUFACTURE", "PACKED", "BEST BEFORE"]) or bool(re.search(r'\b\d{2}[/\-]\d{2,4}\b', t))
+        return any(k in t for k in ["MFG", "PKD", "MANUFACTURE", "PACKED", "BEST BEFORE", "USE BY", "EXP DATE"]) or bool(re.search(r'\b\d{2}[/\-]\d{2,4}\b', t))
 
     def _is_manufacturer_details(self, text: str) -> bool:
         t = text.upper()
-        return any(k in t for k in ["MFD BY", "MANUFACTURED BY", "PACKED BY", "MKTD BY", "HALDIRAM", "PVT. LTD", "NOIDA", "MUMBAI", "DELHI"]) or bool(re.search(r'\b\d{6}\b', t))
+        # Brand-agnostic manufacturer patterns: manufacturing verbs + corporate entity indicators + 6-digit pincode
+        mfg_keywords = [
+            "MFD BY", "MANUFACTURED BY", "PACKED BY", "PACKAGED BY", "MARKETED BY", "MKTD BY", "PRODUCED BY",
+            "REGD OFFICE", "REGISTERED OFFICE", "WORKS", "FACTORY", "UNIT", "PVT. LTD", "PVT LTD",
+            "PRIVATE LIMITED", "LIMITED", "LTD.", "LLP", "INC.", "CORP", "INDUSTRIES", "ENTERPRISES"
+        ]
+        return any(k in t for k in mfg_keywords) or bool(re.search(r'\b\d{6}\b', t))
 
     def _is_consumer_care(self, text: str) -> bool:
         t = text.upper()
-        return any(k in t for k in ["CONSUMER", "CUSTOMER CARE", "FEEDBACK", "CALL US", "E-MAIL", "EMAIL", "SALES@"]) or bool(re.search(r'\b(1800|\d{3,4}[\-\s]?\d{6,8})\b', t))
+        care_keywords = ["CONSUMER", "CUSTOMER CARE", "FEEDBACK", "CALL US", "E-MAIL", "EMAIL", "TOLL FREE", "HELPLINE", "CARE@"]
+        is_email = bool(re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', text))
+        is_phone = bool(re.search(r'\b(1800|1860|\d{3,4}[\-\s]?\d{6,8})\b', t))
+        return any(k in t for k in care_keywords) or is_email or is_phone
 
     def _is_country_of_origin(self, text: str) -> bool:
         t = text.upper()
-        return any(k in t for k in ["PRODUCT OF INDIA", "MADE IN INDIA", "COUNTRY OF ORIGIN"])
+        return any(k in t for k in ["PRODUCT OF", "MADE IN", "COUNTRY OF ORIGIN"])
 
     # --- Rule Evaluators ---
 
@@ -253,7 +261,7 @@ class ComplianceEvaluator:
         )
         return decl, viols
 
-    def _eval_net_quantity(self, block: TextBlock) -> tuple[DeclarationFound, List[ViolationDetail]]:
+    def _eval_net_quantity(self, block: TextBlock, img_height: int) -> tuple[DeclarationFound, List[ViolationDetail]]:
         text = block.text
         t_upper = text.upper()
         viols = []
@@ -273,7 +281,7 @@ class ComplianceEvaluator:
                 evidence_bbox=block.bbox
             ))
 
-        font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, 400)
+        font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
         size_valid = font_size_mm >= 1.0
 
         if not size_valid:
@@ -304,9 +312,9 @@ class ComplianceEvaluator:
         )
         return decl, viols
 
-    def _eval_mfg_date(self, block: TextBlock) -> tuple[DeclarationFound, List[ViolationDetail]]:
+    def _eval_mfg_date(self, block: TextBlock, img_height: int) -> tuple[DeclarationFound, List[ViolationDetail]]:
         text = block.text
-        font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, 400)
+        font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
         decl = DeclarationFound(
             id="manufacture_date",
             field_name="Month and Year of Manufacture",
@@ -322,9 +330,9 @@ class ComplianceEvaluator:
         )
         return decl, []
 
-    def _eval_manufacturer_details(self, block: TextBlock) -> tuple[DeclarationFound, List[ViolationDetail]]:
+    def _eval_manufacturer_details(self, block: TextBlock, img_height: int) -> tuple[DeclarationFound, List[ViolationDetail]]:
         text = block.text
-        font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, 400)
+        font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
         decl = DeclarationFound(
             id="manufacturer_details",
             field_name="Manufacturer Name & Address",
@@ -340,9 +348,9 @@ class ComplianceEvaluator:
         )
         return decl, []
 
-    def _eval_consumer_care(self, block: TextBlock) -> tuple[DeclarationFound, List[ViolationDetail]]:
+    def _eval_consumer_care(self, block: TextBlock, img_height: int) -> tuple[DeclarationFound, List[ViolationDetail]]:
         text = block.text
-        font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, 400)
+        font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
         decl = DeclarationFound(
             id="consumer_care",
             field_name="Consumer Care Details",
@@ -358,9 +366,9 @@ class ComplianceEvaluator:
         )
         return decl, []
 
-    def _eval_country_of_origin(self, block: TextBlock) -> tuple[DeclarationFound, List[ViolationDetail]]:
+    def _eval_country_of_origin(self, block: TextBlock, img_height: int) -> tuple[DeclarationFound, List[ViolationDetail]]:
         text = block.text
-        font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, 400)
+        font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
         decl = DeclarationFound(
             id="country_of_origin",
             field_name="Country of Origin",
@@ -384,6 +392,7 @@ class ComplianceEvaluator:
 
 
 # Helper function to evaluate image compliance directly
-def evaluate_label_compliance(ocr_result: OCRScanResult, ruleset: Optional[Dict[str, Any]] = None) -> ComplianceResult:
-    evaluator = ComplianceEvaluator(ruleset=ruleset)
+def evaluate_label_compliance(ocr_result: OCRScanResult, ruleset: Optional[Dict[str, Any]] = None, db: Optional[Any] = None) -> ComplianceResult:
+    evaluator = ComplianceEvaluator(ruleset=ruleset, db=db)
     return evaluator.evaluate(ocr_result)
+

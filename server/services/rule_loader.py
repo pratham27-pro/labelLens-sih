@@ -81,9 +81,58 @@ def get_default_ruleset() -> Dict[str, Any]:
         ]
     }
 
+def get_rules_from_db(db: Session = None) -> Dict[str, Any]:
+    """
+    Fetches compliance rules directly from the database table 'compliance_rules'.
+    Falls back to file/defaults if DB query fails or table is uninitialized.
+    """
+    close_db_on_exit = False
+    if db is None:
+        try:
+            db = SessionLocal()
+            close_db_on_exit = True
+        except Exception as err:
+            logger.warning(f"Could not open DB session to load rules: {err}. Falling back to default ruleset.")
+            return get_default_ruleset()
+
+    try:
+        rules_in_db = db.query(ComplianceRule).all()
+        if not rules_in_db:
+            logger.info("No rules found in database table 'compliance_rules'. Triggering auto-seeding...")
+            sync_rules_to_db(db=db)
+            rules_in_db = db.query(ComplianceRule).all()
+
+        if not rules_in_db:
+            logger.warning("DB table remains empty after sync attempt. Returning default ruleset.")
+            return get_default_ruleset()
+
+        mandatory_declarations = []
+        for r in rules_in_db:
+            mandatory_declarations.append({
+                "id": r.id,
+                "field_name": r.field_name,
+                "description": r.description or "",
+                "required": r.required,
+                "expected_format": r.expected_format or "",
+                "min_font_size_mm": r.min_font_size_mm
+            })
+
+        return {
+            "ruleset_version": "1.0",
+            "country_scope": "India",
+            "mandatory_declarations": mandatory_declarations
+        }
+    except Exception as e:
+        logger.error(f"Error querying rules from DB: {e}. Falling back to file/default ruleset.")
+        return load_rules_from_file()
+    finally:
+        if close_db_on_exit and db is not None:
+            db.close()
+
+
 def sync_rules_to_db(db: Session = None):
     """
-    Seeds rules from rules.json into database table ONCE.
+    Seeds rules into database table ONCE.
     Skipped if rules are already present in DB.
     """
     close_db_on_exit = False
@@ -121,3 +170,4 @@ def sync_rules_to_db(db: Session = None):
     finally:
         if close_db_on_exit:
             db.close()
+
