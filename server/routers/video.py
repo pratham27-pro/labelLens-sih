@@ -2,10 +2,40 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
+from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from services.video_processing import DominantCuboidUnwrapper
+from database import SessionLocal, get_db
+from models import Inspection
+from services.cloudinary_service import upload_image as upload_image_to_cloudinary
+from routers.uploads import _process_scan
+from services.video_processing import UniversalLabelExtractor
+
+
+def _serialize_inspection_result(inspection: Inspection):
+    violations = [
+        {
+            "id": violation.id,
+            "rule_code": violation.rule_code,
+            "severity": violation.severity,
+            "title": violation.title,
+            "description": violation.description,
+            "evidence_bbox": violation.evidence_bbox,
+        }
+        for violation in inspection.violations
+    ]
+
+    return {
+        "scan_id": inspection.id,
+        "status": inspection.status,
+        "image_path": inspection.image_path,
+        "created_at": inspection.created_at,
+        "compliance_score": inspection.compliance_score,
+        "ocr_result": inspection.raw_ocr_output,
+        "extracted_declarations": inspection.extracted_declarations,
+        "violations": violations,
+    }
 
 router = APIRouter(
     prefix="/api/v1/video",
@@ -22,26 +52,63 @@ def get_unwrapper():
     global _unwrapper
 
     if _unwrapper is None:
-        _unwrapper = DominantCuboidUnwrapper()
+        _unwrapper = UniversalLabelExtractor()
 
     return _unwrapper
 
 
 def process_video(video_path: str, output_dir: str):
-    return get_unwrapper().unwrap_video(video_path, output_dir)
+    return get_unwrapper().process_input(video_path, output_dir)
 
 
-@router.post("/frames")
-async def video_to_frames(file: UploadFile = File(...)):
+@router.get("/frames")
+def list_video_frame_scans(db: Session = Depends(get_db)):
+    inspections = (
+        db.query(Inspection)
+        .filter(Inspection.image_path.isnot(None))
+        .order_by(Inspection.created_at.desc())
+        .all()
+    )
+    images = [_serialize_inspection_result(inspection) for inspection in inspections]
+    return {"images": images, "count": len(images)}
+
+
+@router.get("/frames/{scan_id}")
+def get_video_frame_result(scan_id: str, db: Session = Depends(get_db)):
+    inspection = db.get(Inspection, scan_id)
+    if inspection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video scan not found.",
+        )
+    return _serialize_inspection_result(inspection)
+
+
+@router.get("/{scan_id}")
+def get_video_result(scan_id: str, db: Session = Depends(get_db)):
+    return get_video_frame_result(scan_id=scan_id, db=db)
+
+
+@router.get("/image/{scan_id}")
+def get_video_image_result(scan_id: str, db: Session = Depends(get_db)):
+    return get_video_result(scan_id=scan_id, db=db)
+
+
+@router.post("/frames", status_code=status.HTTP_202_ACCEPTED)
+async def video_to_frames(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    file: UploadFile = File(...)
+):
     filename = file.filename or "upload.mp4"
     extension = Path(filename).suffix.lower()
 
-    allowed_extensions = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+    allowed_extensions = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 
     if extension not in allowed_extensions:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unsupported video format.",
+            detail="Unsupported format.",
         )
 
     video_bytes = await file.read()
@@ -56,7 +123,6 @@ async def video_to_frames(file: UploadFile = File(...)):
     output_dir = VIDEO_OUTPUT_DIR / request_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # The input video only needs to exist while processing.
     with tempfile.TemporaryDirectory() as temp_dir:
         video_path = Path(temp_dir) / f"input{extension}"
         video_path.write_bytes(video_bytes)
@@ -80,14 +146,65 @@ async def video_to_frames(file: UploadFile = File(...)):
             detail="No label faces were detected in the video.",
         )
 
-    return {
-        "request_id": request_id,
-        "folder": str(output_dir),
-        "images": [
-            {
-                "filename": Path(image_path).name,
-                "url": f"/video-files/{request_id}/{Path(image_path).name}",
-            }
-            for image_path in image_paths
-        ],
-    }
+    results = []
+    for image_path in image_paths:
+        frame_bytes = Path(image_path).read_bytes()
+        selected_filename = Path(image_path).name or "label_frame.jpg"
+
+        inspection = Inspection(status="PROCESSING")
+
+        try:
+            db.add(inspection)
+            db.commit()
+            db.refresh(inspection)
+        except Exception:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not create the video scan record.",
+            )
+
+        try:
+            cloudinary_image = upload_image_to_cloudinary(
+                frame_bytes,
+                selected_filename,
+                public_id=f"video_scan_{inspection.id}",
+            )
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not upload extracted video frame to Cloudinary: {exc}",
+            ) from exc
+
+        inspection.image_path = cloudinary_image["secure_url"]
+
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not update the video scan record with the Cloudinary URL.",
+            )
+
+        background_tasks.add_task(_process_scan, inspection.id, frame_bytes)
+
+        results.append({
+            "scan_id": inspection.id,
+            "filename": selected_filename,
+            "url": f"/video-files/{request_id}/{selected_filename}",
+            "image_url": cloudinary_image["secure_url"],
+            "cloudinary_public_id": cloudinary_image["public_id"],
+            "status": inspection.status,
+        })
+    return {"images": results, "count": len(results)}
+
+
+@router.post("/image", status_code=status.HTTP_202_ACCEPTED)
+async def video_upload_image(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    file: UploadFile = File(...),
+):
+    return await video_to_frames(background_tasks=background_tasks, db=db, file=file)

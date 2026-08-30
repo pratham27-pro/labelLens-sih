@@ -208,3 +208,48 @@ def test_background_scan_handles_pydantic_structured_result(monkeypatch):
     assert saved.status != "FAILED"
     assert saved.raw_ocr_output["structured_compliance"]["final_status"] == "NON_COMPLIANT"
     db.close()
+
+
+def test_video_frames_endpoint_returns_images_payload(monkeypatch):
+    """The video route should expose the image array the mobile client expects."""
+    from routers import video as video_module
+
+    class DummyVideoExtractor:
+        def process_input(self, video_path, output_dir):
+            return ["/tmp/frame_1.png"]
+
+    def fake_upload(frame_bytes, filename, public_id=None):
+        return {"secure_url": "https://example.com/frame.jpg", "public_id": public_id or "video_demo"}
+
+    monkeypatch.setattr(video_module, "get_unwrapper", lambda: DummyVideoExtractor())
+    monkeypatch.setattr(video_module, "upload_image_to_cloudinary", fake_upload)
+
+    response = client.post(
+        "/api/v1/video/frames",
+        files={"file": ("clip.mp4", b"fake-video-data", "video/mp4")},
+    )
+
+    assert response.status_code == 202
+    data = response.json()
+    assert "images" in data
+    assert len(data["images"]) == 1
+    assert data["images"][0]["scan_id"]
+    assert data["images"][0]["image_url"] == "https://example.com/frame.jpg"
+
+
+def test_video_result_endpoint_returns_saved_scan(monkeypatch):
+    """Video scans should be queryable by scan_id like photo scans."""
+    db = TestingSessionLocal()
+    inspection = Inspection(status="PROCESSING", image_path="https://example.com/video-frame.jpg")
+    db.add(inspection)
+    db.commit()
+    db.refresh(inspection)
+    db.close()
+
+    response = client.get(f"/api/v1/video/frames/{inspection.id}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["scan_id"] == inspection.id
+    assert data["status"] == "PROCESSING"
+    assert data["image_path"] == "https://example.com/video-frame.jpg"
