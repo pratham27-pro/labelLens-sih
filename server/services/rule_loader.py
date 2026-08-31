@@ -130,10 +130,10 @@ def get_rules_from_db(db: Session = None) -> Dict[str, Any]:
             db.close()
 
 
-def sync_rules_to_db(db: Session = None):
+def sync_rules_to_db(db: Session = None, force_update: bool = False):
     """
-    Seeds rules into database table ONCE.
-    Skipped if rules are already present in DB.
+    Seeds rules into database table 'compliance_rules'.
+    If force_update is True, existing rules will be updated with values from rules.json.
     """
     close_db_on_exit = False
     if db is None:
@@ -141,10 +141,9 @@ def sync_rules_to_db(db: Session = None):
         close_db_on_exit = True
 
     try:
-        # Check if rules are already seeded in DB
-        existing_count = db.query(ComplianceRule).count()
-        if existing_count > 0:
-            logger.info(f"Compliance rules already seeded ({existing_count} rules found in DB). Skipping re-seeding.")
+        existing_rules = {r.id: r for r in db.query(ComplianceRule).all()}
+        if existing_rules and not force_update:
+            logger.info(f"Compliance rules already seeded ({len(existing_rules)} rules found in DB). Skipping re-seeding.")
             return
 
         rules_data = load_rules_from_file()
@@ -152,22 +151,47 @@ def sync_rules_to_db(db: Session = None):
 
         for item in declarations:
             rule_id = item["id"]
-            rule_obj = ComplianceRule(
-                id=rule_id,
-                field_name=item.get("field_name", rule_id),
-                description=item.get("description", ""),
-                required=item.get("required", True),
-                expected_format=item.get("expected_format", ""),
-                min_font_size_mm=item.get("min_font_size_mm", 1.0)
-            )
-            db.add(rule_obj)
+            if rule_id in existing_rules and force_update:
+                rule_obj = existing_rules[rule_id]
+                rule_obj.field_name = item.get("field_name", rule_id)
+                rule_obj.description = item.get("description", "")
+                rule_obj.required = item.get("required", True)
+                rule_obj.expected_format = item.get("expected_format", "")
+                rule_obj.min_font_size_mm = item.get("min_font_size_mm", 1.0)
+            elif rule_id not in existing_rules:
+                rule_obj = ComplianceRule(
+                    id=rule_id,
+                    field_name=item.get("field_name", rule_id),
+                    description=item.get("description", ""),
+                    required=item.get("required", True),
+                    expected_format=item.get("expected_format", ""),
+                    min_font_size_mm=item.get("min_font_size_mm", 1.0)
+                )
+                db.add(rule_obj)
 
         db.commit()
-        logger.info("Compliance rules seeded to database successfully.")
+        logger.info("Compliance rules synchronized to database successfully.")
     except Exception as e:
         logger.error(f"Error seeding rules to DB: {e}")
         db.rollback()
     finally:
         if close_db_on_exit:
             db.close()
+
+
+def export_db_rules_to_file(db: Session = None) -> bool:
+    """
+    Exports current active DB compliance rules back to rules.json file.
+    Ensures local file fallback stays in sync if DB rules were updated.
+    """
+    rules_data = get_rules_from_db(db=db)
+    try:
+        with open(RULES_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(rules_data, f, indent=2)
+        logger.info(f"Exported {len(rules_data.get('mandatory_declarations', []))} DB rules to {RULES_FILE_PATH}.")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to export DB rules to file: {e}")
+        return False
+
 

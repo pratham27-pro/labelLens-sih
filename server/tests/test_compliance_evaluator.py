@@ -15,8 +15,10 @@ from services.ocr_service import extract_text_from_image
 from services.compliance_evaluator import evaluate_label_compliance, ComplianceEvaluator
 from services.rule_loader import get_rules_from_db
 
+from sqlalchemy.pool import StaticPool
+
 TEST_SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-engine_test = create_engine(TEST_SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+engine_test = create_engine(TEST_SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_test)
 
 def override_get_db():
