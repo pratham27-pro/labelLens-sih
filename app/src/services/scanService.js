@@ -155,10 +155,17 @@ function buildDeclarations(scan) {
     violationsByRuleCode.get(v.rule_code).push(v);
   }
 
-  return Object.entries(RULE_ID_TO_TYPE).map(([ruleId, type]) => {
+  const allRuleIds = new Set([
+    ...Object.keys(RULE_ID_TO_TYPE),
+    ...foundById.keys(),
+    ...violationsByRuleCode.keys(),
+  ]);
+
+  return Array.from(allRuleIds).map((ruleId) => {
+    const type = RULE_ID_TO_TYPE[ruleId] || ruleId;
     const found = foundById.get(ruleId);
     const violations = violationsByRuleCode.get(ruleId) || [];
-    const label = DECLARATION_LABELS[type];
+    const label = DECLARATION_LABELS[type] || found?.field_name || ruleId.replace(/_/g, ' ').toUpperCase();
 
     if (!found) {
       const missing = violations.find((v) => violationTypeFromTitle(v.title) === 'missing');

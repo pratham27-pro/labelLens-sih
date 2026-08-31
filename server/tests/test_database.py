@@ -12,8 +12,10 @@ from main import app
 from database import Base, get_db
 from models import User, UserRole, Product, Inspection, Violation
 
+from sqlalchemy.pool import StaticPool
+
 TEST_SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-engine_test = create_engine(TEST_SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+engine_test = create_engine(TEST_SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_test)
 
 def override_get_db():
@@ -146,8 +148,8 @@ def test_background_scan_uses_new_session_for_processing(monkeypatch):
 
     monkeypatch.setattr(cloudinary_service, "upload_image", fake_upload)
     monkeypatch.setattr(uploads_module, "get_ocr_service", lambda: type("OCR", (), {"extract_text": lambda self, *args, **kwargs: DummyOCRResult()})())
-    monkeypatch.setattr(uploads_module, "evaluate_label_compliance", lambda ocr_result, ruleset=None: DummyComplianceResult())
-    monkeypatch.setattr(uploads_module, "load_rules_from_file", lambda: {"mandatory_declarations": []})
+    monkeypatch.setattr(uploads_module, "evaluate_label_compliance", lambda ocr_result, ruleset=None, db=None: DummyComplianceResult())
+    monkeypatch.setattr(uploads_module, "get_rules_from_db", lambda db=None: {"mandatory_declarations": []})
     monkeypatch.setattr(uploads_module, "SessionLocal", TestingSessionLocal)
 
     db = TestingSessionLocal()
@@ -190,8 +192,8 @@ def test_background_scan_handles_pydantic_structured_result(monkeypatch):
         )
 
     monkeypatch.setattr(uploads_module, "get_ocr_service", lambda: type("OCR", (), {"extract_text": lambda self, *args, **kwargs: DummyOCRResult()})())
-    monkeypatch.setattr(uploads_module, "evaluate_label_compliance", lambda ocr_result, ruleset=None: DummyComplianceResult())
-    monkeypatch.setattr(uploads_module, "load_rules_from_file", lambda: {"mandatory_declarations": []})
+    monkeypatch.setattr(uploads_module, "evaluate_label_compliance", lambda ocr_result, ruleset=None, db=None: DummyComplianceResult())
+    monkeypatch.setattr(uploads_module, "get_rules_from_db", lambda db=None: {"mandatory_declarations": []})
     monkeypatch.setattr(uploads_module, "SessionLocal", TestingSessionLocal)
 
     db = TestingSessionLocal()
@@ -210,13 +212,16 @@ def test_background_scan_handles_pydantic_structured_result(monkeypatch):
     db.close()
 
 
-def test_video_frames_endpoint_returns_images_payload(monkeypatch):
+def test_video_frames_endpoint_returns_images_payload(monkeypatch, tmp_path):
     """The video route should expose the image array the mobile client expects."""
     from routers import video as video_module
 
+    frame_file = tmp_path / "frame_1.png"
+    frame_file.write_bytes(b"fake-image-bytes")
+
     class DummyVideoExtractor:
         def process_input(self, video_path, output_dir):
-            return ["/tmp/frame_1.png"]
+            return [str(frame_file)]
 
     def fake_upload(frame_bytes, filename, public_id=None):
         return {"secure_url": "https://example.com/frame.jpg", "public_id": public_id or "video_demo"}

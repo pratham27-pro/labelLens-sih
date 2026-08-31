@@ -9,7 +9,7 @@ from models import Inspection, Violation
 from services.compliance_evaluator import evaluate_label_compliance
 from services.cloudinary_service import upload_image as upload_image_to_cloudinary
 from services.ocr_service import get_ocr_service
-from services.rule_loader import load_rules_from_file
+from services.rule_loader import load_rules_from_file, get_rules_from_db
 
 logger = logging.getLogger("uploads")
 
@@ -39,10 +39,11 @@ def _process_scan(inspection_id: str, image_bytes: bytes, db: Session | None = N
             if not ocr_result.success:
                 raise RuntimeError(ocr_result.error or "OCR extraction failed")
 
-            ruleset = load_rules_from_file()
+            ruleset = get_rules_from_db(db=db)
             compliance_result = evaluate_label_compliance(
                 ocr_result,
                 ruleset=ruleset,
+                db=db,
             )
 
             structured_result = compliance_result.structured_result or {

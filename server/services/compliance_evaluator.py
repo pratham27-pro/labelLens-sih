@@ -21,6 +21,17 @@ class ComplianceEvaluator:
             ruleset = get_rules_from_db(db=db)
         self.ruleset = ruleset
         self.mandatory_rules = ruleset.get("mandatory_declarations", [])
+        self.rule_map = {r["id"]: r for r in self.mandatory_rules}
+
+    def _get_min_font_size(self, rule_id: str, default: float = 1.0) -> float:
+        rule = self.rule_map.get(rule_id, {})
+        val = rule.get("min_font_size_mm")
+        if val is not None:
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                pass
+        return default
 
     def evaluate(self, ocr_result: OCRScanResult) -> ComplianceResult:
         """
@@ -223,24 +234,25 @@ class ComplianceEvaluator:
             viols.append(ViolationDetail(
                 id=f"viol_mrp_tax_{block.id}",
                 rule_id="mrp",
-                field_name="Maximum Retail Price (MRP)",
+                field_name=self.rule_map.get("mrp", {}).get("field_name", "Maximum Retail Price (MRP)"),
                 violation_type="wrong_format",
                 severity="MAJOR",
                 description="MRP declaration is missing mandated tax clause '(incl. of all taxes)' as per Legal Metrology Rule 6.",
                 evidence_bbox=block.bbox
             ))
 
+        min_font = self._get_min_font_size("mrp", 1.0)
         font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, ocr_result.image_metadata.height)
-        size_valid = font_size_mm >= 1.0
+        size_valid = font_size_mm >= min_font
 
         if not size_valid:
             viols.append(ViolationDetail(
                 id=f"viol_mrp_size_{block.id}",
                 rule_id="mrp",
-                field_name="Maximum Retail Price (MRP)",
+                field_name=self.rule_map.get("mrp", {}).get("field_name", "Maximum Retail Price (MRP)"),
                 violation_type="too_small",
                 severity="MINOR",
-                description=f"MRP text font size ({font_size_mm:.1f}mm) is below prescribed minimum height (1.0mm).",
+                description=f"MRP text font size ({font_size_mm:.1f}mm) is below prescribed minimum height ({min_font:.1f}mm).",
                 evidence_bbox=block.bbox
             ))
 
@@ -248,7 +260,7 @@ class ComplianceEvaluator:
 
         decl = DeclarationFound(
             id="mrp",
-            field_name="Maximum Retail Price (MRP)",
+            field_name=self.rule_map.get("mrp", {}).get("field_name", "Maximum Retail Price (MRP)"),
             extracted_text=text,
             parsed_value=text,
             confidence=block.confidence,
@@ -274,24 +286,25 @@ class ComplianceEvaluator:
             viols.append(ViolationDetail(
                 id=f"viol_net_qty_symbol_{block.id}",
                 rule_id="net_quantity",
-                field_name="Net Quantity",
+                field_name=self.rule_map.get("net_quantity", {}).get("field_name", "Net Quantity"),
                 violation_type="wrong_format",
                 severity="MAJOR",
                 description="Net Quantity uses non-standard unit symbol ('gms'/'ltrs'). Legal Metrology mandates standard SI units ('g', 'kg', 'ml', 'L', 'N').",
                 evidence_bbox=block.bbox
             ))
 
+        min_font = self._get_min_font_size("net_quantity", 1.0)
         font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
-        size_valid = font_size_mm >= 1.0
+        size_valid = font_size_mm >= min_font
 
         if not size_valid:
             viols.append(ViolationDetail(
                 id=f"viol_net_qty_size_{block.id}",
                 rule_id="net_quantity",
-                field_name="Net Quantity",
+                field_name=self.rule_map.get("net_quantity", {}).get("field_name", "Net Quantity"),
                 violation_type="too_small",
                 severity="MINOR",
-                description=f"Net Quantity font size ({font_size_mm:.1f}mm) is below prescribed minimum height.",
+                description=f"Net Quantity font size ({font_size_mm:.1f}mm) is below prescribed minimum height ({min_font:.1f}mm).",
                 evidence_bbox=block.bbox
             ))
 
@@ -299,7 +312,7 @@ class ComplianceEvaluator:
 
         decl = DeclarationFound(
             id="net_quantity",
-            field_name="Net Quantity",
+            field_name=self.rule_map.get("net_quantity", {}).get("field_name", "Net Quantity"),
             extracted_text=text,
             parsed_value=text,
             confidence=block.confidence,
@@ -314,10 +327,25 @@ class ComplianceEvaluator:
 
     def _eval_mfg_date(self, block: TextBlock, img_height: int) -> tuple[DeclarationFound, List[ViolationDetail]]:
         text = block.text
+        min_font = self._get_min_font_size("manufacture_date", 1.0)
         font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
+        size_valid = font_size_mm >= min_font
+        viols = []
+
+        if not size_valid:
+            viols.append(ViolationDetail(
+                id=f"viol_mfg_date_size_{block.id}",
+                rule_id="manufacture_date",
+                field_name=self.rule_map.get("manufacture_date", {}).get("field_name", "Month and Year of Manufacture"),
+                violation_type="too_small",
+                severity="MINOR",
+                description=f"Month/Year of Manufacture font size ({font_size_mm:.1f}mm) is below prescribed minimum height ({min_font:.1f}mm).",
+                evidence_bbox=block.bbox
+            ))
+
         decl = DeclarationFound(
             id="manufacture_date",
-            field_name="Month and Year of Manufacture",
+            field_name=self.rule_map.get("manufacture_date", {}).get("field_name", "Month and Year of Manufacture"),
             extracted_text=text,
             parsed_value=text,
             confidence=block.confidence,
@@ -325,17 +353,32 @@ class ComplianceEvaluator:
             font_size_px=block.size.estimated_font_size_px,
             font_size_mm_est=font_size_mm,
             format_valid=True,
-            size_valid=True,
-            status="COMPLIANT"
+            size_valid=size_valid,
+            status="COMPLIANT" if size_valid else "TOO_SMALL"
         )
-        return decl, []
+        return decl, viols
 
     def _eval_manufacturer_details(self, block: TextBlock, img_height: int) -> tuple[DeclarationFound, List[ViolationDetail]]:
         text = block.text
+        min_font = self._get_min_font_size("manufacturer_details", 1.0)
         font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
+        size_valid = font_size_mm >= min_font
+        viols = []
+
+        if not size_valid:
+            viols.append(ViolationDetail(
+                id=f"viol_mfg_details_size_{block.id}",
+                rule_id="manufacturer_details",
+                field_name=self.rule_map.get("manufacturer_details", {}).get("field_name", "Manufacturer Name & Address"),
+                violation_type="too_small",
+                severity="MINOR",
+                description=f"Manufacturer details font size ({font_size_mm:.1f}mm) is below prescribed minimum height ({min_font:.1f}mm).",
+                evidence_bbox=block.bbox
+            ))
+
         decl = DeclarationFound(
             id="manufacturer_details",
-            field_name="Manufacturer Name & Address",
+            field_name=self.rule_map.get("manufacturer_details", {}).get("field_name", "Manufacturer Name & Address"),
             extracted_text=text,
             parsed_value=text,
             confidence=block.confidence,
@@ -343,17 +386,32 @@ class ComplianceEvaluator:
             font_size_px=block.size.estimated_font_size_px,
             font_size_mm_est=font_size_mm,
             format_valid=True,
-            size_valid=True,
-            status="COMPLIANT"
+            size_valid=size_valid,
+            status="COMPLIANT" if size_valid else "TOO_SMALL"
         )
-        return decl, []
+        return decl, viols
 
     def _eval_consumer_care(self, block: TextBlock, img_height: int) -> tuple[DeclarationFound, List[ViolationDetail]]:
         text = block.text
+        min_font = self._get_min_font_size("consumer_care", 1.0)
         font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
+        size_valid = font_size_mm >= min_font
+        viols = []
+
+        if not size_valid:
+            viols.append(ViolationDetail(
+                id=f"viol_consumer_care_size_{block.id}",
+                rule_id="consumer_care",
+                field_name=self.rule_map.get("consumer_care", {}).get("field_name", "Consumer Care Details"),
+                violation_type="too_small",
+                severity="MINOR",
+                description=f"Consumer care font size ({font_size_mm:.1f}mm) is below prescribed minimum height ({min_font:.1f}mm).",
+                evidence_bbox=block.bbox
+            ))
+
         decl = DeclarationFound(
             id="consumer_care",
-            field_name="Consumer Care Details",
+            field_name=self.rule_map.get("consumer_care", {}).get("field_name", "Consumer Care Details"),
             extracted_text=text,
             parsed_value=text,
             confidence=block.confidence,
@@ -361,17 +419,32 @@ class ComplianceEvaluator:
             font_size_px=block.size.estimated_font_size_px,
             font_size_mm_est=font_size_mm,
             format_valid=True,
-            size_valid=True,
-            status="COMPLIANT"
+            size_valid=size_valid,
+            status="COMPLIANT" if size_valid else "TOO_SMALL"
         )
-        return decl, []
+        return decl, viols
 
     def _eval_country_of_origin(self, block: TextBlock, img_height: int) -> tuple[DeclarationFound, List[ViolationDetail]]:
         text = block.text
+        min_font = self._get_min_font_size("country_of_origin", 1.0)
         font_size_mm = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
+        size_valid = font_size_mm >= min_font
+        viols = []
+
+        if not size_valid:
+            viols.append(ViolationDetail(
+                id=f"viol_country_of_origin_size_{block.id}",
+                rule_id="country_of_origin",
+                field_name=self.rule_map.get("country_of_origin", {}).get("field_name", "Country of Origin"),
+                violation_type="too_small",
+                severity="MINOR",
+                description=f"Country of origin font size ({font_size_mm:.1f}mm) is below prescribed minimum height ({min_font:.1f}mm).",
+                evidence_bbox=block.bbox
+            ))
+
         decl = DeclarationFound(
             id="country_of_origin",
-            field_name="Country of Origin",
+            field_name=self.rule_map.get("country_of_origin", {}).get("field_name", "Country of Origin"),
             extracted_text=text,
             parsed_value=text,
             confidence=block.confidence,
@@ -379,10 +452,10 @@ class ComplianceEvaluator:
             font_size_px=block.size.estimated_font_size_px,
             font_size_mm_est=font_size_mm,
             format_valid=True,
-            size_valid=True,
-            status="COMPLIANT"
+            size_valid=size_valid,
+            status="COMPLIANT" if size_valid else "TOO_SMALL"
         )
-        return decl, []
+        return decl, viols
 
     def _estimate_font_mm(self, font_size_px: float, img_height_px: int) -> float:
         """Estimates physical font height in mm based on pixel scaling."""
