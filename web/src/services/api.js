@@ -207,6 +207,8 @@ function normalizeInspectionSummary(item = {}) {
     violationsCount:
       item.violations_count ??
       (Array.isArray(item.violations) ? item.violations.length : item.violations ?? 0),
+    reportUrl: item.report_url || item.reportUrl || item.reports?.[0]?.fileUrl || null,
+    product: item.product || null,
     createdAt: item.created_at || item.scannedAt || item.createdAt || null,
   };
 }

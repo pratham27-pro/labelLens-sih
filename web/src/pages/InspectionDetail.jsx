@@ -111,6 +111,18 @@ export default function InspectionDetail() {
           </div>
           {inspection && (
             <div className="flex items-center gap-3">
+              {inspection.reportUrl && (
+                <a
+                  href={inspection.reportUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2 border border-outline-variant bg-surface-container-lowest hover:bg-surface-container-low text-on-surface text-sm font-semibold rounded-xl flex items-center gap-2 transition-all shadow-sm"
+                  title="Open Official Cloudinary Certificate in new tab"
+                >
+                  <span className="material-symbols-outlined text-[18px] text-emerald-600 dark:text-emerald-400">verified</span>
+                  Cloudinary Certificate
+                </a>
+              )}
               <button
                 onClick={() => setShowReportModal(true)}
                 className="px-4 py-2 bg-primary hover:bg-primary-container text-white text-sm font-semibold rounded-xl flex items-center gap-2 transition-all shadow-sm"

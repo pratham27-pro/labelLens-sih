@@ -47,7 +47,7 @@ export default function Reports() {
 
   const exportCSV = () => {
     if (!inspections.length) return;
-    const headers = ['Scan ID', 'Product Name', 'Category', 'Date', 'Status', 'Compliance Score (%)', 'Violations Count', 'Original Image', 'Annotated Image'];
+    const headers = ['Scan ID', 'Product Name', 'Category', 'Date', 'Status', 'Compliance Score (%)', 'Violations Count', 'Original Image', 'Annotated Image', 'Cloudinary Certificate'];
     const rows = inspections.map((i) => [
       i.id,
       i.productName || 'Packaged Commodity',
@@ -58,6 +58,7 @@ export default function Reports() {
       i.violationsCount ?? 0,
       i.imageUrl || '',
       i.annotatedImageUrl || i.annotatedImagePath || '',
+      i.reportUrl || '',
     ]);
 
     const csvContent = [headers.join(','), ...rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))].join('\n');
@@ -344,6 +345,18 @@ export default function Reports() {
                         {/* Actions */}
                         <td className="py-3.5 px-6 text-right">
                           <div className="flex items-center justify-end gap-2">
+                            {item.reportUrl && (
+                              <a
+                                href={item.reportUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 font-semibold text-xs transition-all flex items-center gap-1.5 border border-emerald-500/20"
+                                title="Open Cloudinary Stored Audit Certificate"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">verified</span>
+                                Cert
+                              </a>
+                            )}
                             <button
                               type="button"
                               onClick={() => handleOpenReport(item)}

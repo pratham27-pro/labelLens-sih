@@ -2,9 +2,43 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import prisma from "../config/db.js";
 import { JWT_SECRET } from "../middleware/auth.js";
+import {
+  ROLES,
+  ALL_ROLES,
+  isValidRole,
+  isGovernmentRole,
+  getRolePermissions,
+} from "../constants/rbac.js";
 
-const VALID_ROLES = ["FIELD_INSPECTOR", "DISTRICT_OFFICER", "STATE_CONTROLLER", "ADMIN"];
+/**
+ * Normalizes legacy or newly configured role names to standard UserRole
+ */
+function normalizeRole(roleInput) {
+  if (!roleInput) return ROLES.CONSUMER;
+  const upper = String(roleInput).toUpperCase().trim();
 
+  // Backward compatibility mapping for older test suites and clients
+  const legacyMap = {
+    FIELD_INSPECTOR: ROLES.INSPECTOR,
+    DISTRICT_OFFICER: ROLES.CONTROLLER,
+    STATE_CONTROLLER: ROLES.ASSISTANT_DIRECTOR,
+    ADMIN: ROLES.DIRECTOR,
+  };
+
+  if (legacyMap[upper]) {
+    return legacyMap[upper];
+  }
+
+  if (isValidRole(upper)) {
+    return upper;
+  }
+
+  return null;
+}
+
+/**
+ * Register a new user with role, government identifiers, and hierarchy metadata
+ */
 async function register(req, reply) {
   try {
     const {
@@ -17,10 +51,16 @@ async function register(req, reply) {
       state,
       badgeNumber,
       badge_number,
+      employeeId,
+      employee_id,
+      organizationId,
+      organization_id,
     } = req.body || {};
 
     const name = fullName || full_name;
     const badge = badgeNumber || badge_number;
+    const empId = employeeId || employee_id;
+    const orgId = organizationId || organization_id;
 
     if (!email || !password || !name) {
       return reply.code(400).send({
@@ -36,23 +76,52 @@ async function register(req, reply) {
       });
     }
 
-    let assignedRole = (role || "FIELD_INSPECTOR").toUpperCase();
-    if (!VALID_ROLES.includes(assignedRole)) {
+    const assignedRole = normalizeRole(role || ROLES.CONSUMER);
+    if (!assignedRole) {
       return reply.code(400).send({
         error: "Bad Request",
-        message: `Invalid role. Must be one of: ${VALID_ROLES.join(", ")}`,
+        message: `Invalid role. Must be one of: ${ALL_ROLES.join(", ")}`,
       });
     }
 
-    const existingUser = await prisma.user.findUnique({
+    // Role-specific validation rules
+    if (assignedRole === ROLES.CONTROLLER && (!district || !String(district).trim())) {
+      return reply.code(400).send({
+        error: "Bad Request",
+        message: "Jurisdiction 'district' is required when registering a CONTROLLER",
+      });
+    }
+
+    if (assignedRole === ROLES.MANUFACTURER && (!orgId || !String(orgId).trim())) {
+      return reply.code(400).send({
+        error: "Bad Request",
+        message: "Organization ID is required when registering a MANUFACTURER",
+      });
+    }
+
+    // Check unique email
+    const existingEmail = await prisma.user.findUnique({
       where: { email: email.toLowerCase().trim() },
     });
 
-    if (existingUser) {
+    if (existingEmail) {
       return reply.code(409).send({
         error: "Conflict",
         message: "A user with this email address already exists",
       });
+    }
+
+    // Check unique employeeId if supplied
+    if (empId) {
+      const existingEmpId = await prisma.user.findUnique({
+        where: { employeeId: String(empId).trim() },
+      });
+      if (existingEmpId) {
+        return reply.code(409).send({
+          error: "Conflict",
+          message: "A government official with this employeeId already exists",
+        });
+      }
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -61,39 +130,51 @@ async function register(req, reply) {
       data: {
         email: email.toLowerCase().trim(),
         password: hashedPassword,
-        fullName: name,
+        fullName: name.trim(),
         role: assignedRole,
-        district: district || null,
-        state: state || null,
-        badgeNumber: badge || null,
+        district: district ? String(district).trim() : null,
+        state: state ? String(state).trim() : null,
+        badgeNumber: badge ? String(badge).trim() : null,
+        employeeId: empId ? String(empId).trim() : null,
+        organizationId: orgId ? String(orgId).trim() : null,
       },
       select: {
         id: true,
         fullName: true,
         email: true,
         role: true,
+        employeeId: true,
+        badgeNumber: true,
         district: true,
         state: true,
-        badgeNumber: true,
+        organizationId: true,
         createdAt: true,
       },
     });
 
-    const token = jwt.sign(
-      {
-        id: newUser.id,
-        email: newUser.email,
-        role: newUser.role,
-        fullName: newUser.fullName,
-      },
-      JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
-    );
+    const tokenPayload = {
+      id: newUser.id,
+      email: newUser.email,
+      role: newUser.role,
+      fullName: newUser.fullName,
+      district: newUser.district,
+      state: newUser.state,
+      organizationId: newUser.organizationId,
+      employeeId: newUser.employeeId,
+      badgeNumber: newUser.badgeNumber,
+    };
+
+    const token = jwt.sign(tokenPayload, JWT_SECRET, {
+      expiresIn: process.env.JWT_EXPIRES_IN || "7d",
+    });
 
     return reply.code(201).send({
       message: "User registered successfully",
       token,
-      user: newUser,
+      user: {
+        ...newUser,
+        permissions: getRolePermissions(newUser.role),
+      },
     });
   } catch (error) {
     req.log.error(error);
@@ -104,6 +185,9 @@ async function register(req, reply) {
   }
 }
 
+/**
+ * Login user and issue JWT with complete scoping claims
+ */
 async function login(req, reply) {
   try {
     const { email, password } = req.body || {};
@@ -134,16 +218,23 @@ async function login(req, reply) {
       });
     }
 
-    const token = jwt.sign(
-      {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        fullName: user.fullName,
-      },
-      JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
-    );
+    const role = user.role.toUpperCase();
+
+    const tokenPayload = {
+      id: user.id,
+      email: user.email,
+      role,
+      fullName: user.fullName,
+      district: user.district,
+      state: user.state,
+      organizationId: user.organizationId,
+      employeeId: user.employeeId,
+      badgeNumber: user.badgeNumber,
+    };
+
+    const token = jwt.sign(tokenPayload, JWT_SECRET, {
+      expiresIn: process.env.JWT_EXPIRES_IN || "7d",
+    });
 
     return reply.code(200).send({
       message: "Login successful",
@@ -152,10 +243,13 @@ async function login(req, reply) {
         id: user.id,
         fullName: user.fullName,
         email: user.email,
-        role: user.role,
+        role,
+        employeeId: user.employeeId,
+        badgeNumber: user.badgeNumber,
         district: user.district,
         state: user.state,
-        badgeNumber: user.badgeNumber,
+        organizationId: user.organizationId,
+        permissions: getRolePermissions(role),
         createdAt: user.createdAt,
       },
     });
@@ -168,9 +262,10 @@ async function login(req, reply) {
   }
 }
 
+/**
+ * Returns current authenticated user's profile and permissions
+ */
 async function getMe(req, reply) {
-  // Auth middleware only provides JWT fields (id, email, role, fullName).
-  // Profile endpoint needs the full user record from DB.
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
@@ -179,9 +274,19 @@ async function getMe(req, reply) {
         fullName: true,
         email: true,
         role: true,
+        employeeId: true,
+        badgeNumber: true,
         district: true,
         state: true,
-        badgeNumber: true,
+        organizationId: true,
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            code: true,
+            type: true,
+          },
+        },
         createdAt: true,
       },
     });
@@ -193,7 +298,12 @@ async function getMe(req, reply) {
       });
     }
 
-    return reply.code(200).send({ user });
+    return reply.code(200).send({
+      user: {
+        ...user,
+        permissions: getRolePermissions(user.role),
+      },
+    });
   } catch (error) {
     req.log.error(error);
     return reply.code(500).send({
@@ -203,26 +313,24 @@ async function getMe(req, reply) {
   }
 }
 
+/**
+ * Update user's profile
+ */
 async function updateProfile(req, reply) {
   try {
-    const { fullName, district, state } = req.body || {};
-
-    if (fullName !== undefined && (!fullName || !String(fullName).trim())) {
-      return reply.code(400).send({
-        error: "Bad Request",
-        message: "Full name cannot be empty",
-      });
-    }
+    const { fullName, district, state, badgeNumber, employeeId } = req.body || {};
 
     const data = {};
     if (fullName !== undefined) data.fullName = String(fullName).trim();
     if (district !== undefined) data.district = district ? String(district).trim() : null;
     if (state !== undefined) data.state = state ? String(state).trim() : null;
+    if (badgeNumber !== undefined) data.badgeNumber = badgeNumber ? String(badgeNumber).trim() : null;
+    if (employeeId !== undefined) data.employeeId = employeeId ? String(employeeId).trim() : null;
 
     if (Object.keys(data).length === 0) {
       return reply.code(400).send({
         error: "Bad Request",
-        message: "No updatable fields provided (fullName, district, state)",
+        message: "No updatable fields provided",
       });
     }
 
@@ -234,16 +342,21 @@ async function updateProfile(req, reply) {
         fullName: true,
         email: true,
         role: true,
+        employeeId: true,
+        badgeNumber: true,
         district: true,
         state: true,
-        badgeNumber: true,
+        organizationId: true,
         createdAt: true,
       },
     });
 
     return reply.code(200).send({
       message: "Profile updated successfully",
-      user,
+      user: {
+        ...user,
+        permissions: getRolePermissions(user.role),
+      },
     });
   } catch (error) {
     req.log.error(error);

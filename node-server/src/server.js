@@ -9,6 +9,7 @@ import healthRoute from "./routes/healthroute.js";
 import authRoutes from "./routes/authRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import scanRoutes from "./routes/scanRoutes.js";
+import complianceRoutes from "./routes/complianceRoutes.js";
 
 const fastify = Fastify({
   logger: {
@@ -38,6 +39,7 @@ async function buildServer() {
   await fastify.register(authRoutes, { prefix: "/auth" });
   await fastify.register(uploadRoutes, { prefix: "/api/v1/uploads" });
   await fastify.register(scanRoutes, { prefix: "/api/v1" });
+  await fastify.register(complianceRoutes, { prefix: "/api/v1" });
 
   return fastify;
 }

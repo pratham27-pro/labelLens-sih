@@ -4,7 +4,8 @@
   "description": "LabelLens Fastify Backend - State, Storage & Orchestration Engine",
   "main": "src/server.js",
   "scripts": {
-    "test": "node test/test_suite.js",
+    "test": "node test/test_suite.js && node test/rbac_scoping_test.js",
+    "test:rbac": "node test/rbac_scoping_test.js",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "prisma:generate": "prisma generate",
