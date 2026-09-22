@@ -12,6 +12,31 @@ import {
 } from "../services/fastapiService.js";
 import { isMaskScanEnabled } from "../utils/scanFlags.js";
 import * as scanCache from "../utils/scanCache.js";
+import { resolveOrCreateProduct } from "../services/productService.js";
+import { generateAndUploadReport } from "../services/reportService.js";
+import {
+  getInspectionScope,
+  getReportScope,
+  mergeScope,
+  assertInspectionAccess,
+  SecurityScopingError,
+} from "../services/dataScopingService.js";
+import { ROLES } from "../constants/rbac.js";
+
+function getScanAttributionData(user) {
+  if (!user) return {};
+  const role = (user.role || "").toUpperCase();
+  if (role === ROLES.INSPECTOR || role === ROLES.MANUFACTURER) {
+    return { inspectorId: user.id };
+  }
+  if (role === ROLES.REVIEWER) {
+    return { reviewerId: user.id };
+  }
+  if (role === ROLES.CONSUMER) {
+    return { consumerId: user.id };
+  }
+  return { inspectorId: user.id };
+}
 
 /**
  * Split the multi-megabyte annotated-image base64 out of the FastAPI OCR
@@ -36,6 +61,52 @@ function extractAnnotatedImage(ocrResult) {
   delete ocrSlim.annotated_image_base64;
   delete ocrSlim.annotated_image;
   return { annotatedBase64, ocrSlim };
+}
+
+/**
+ * Automatically creates/links the Product record in NeonDB and generates/uploads
+ * the statutory compliance report to Cloudinary, persisting it to the reports table.
+ */
+async function finalizeInspectionArtifacts({
+  inspectionId,
+  category = "general",
+  declarations = [],
+  rawOcr = {},
+  violations = [],
+  log,
+}) {
+  try {
+    const inspection = await prisma.inspection.findUnique({
+      where: { id: inspectionId },
+      include: { product: true },
+    });
+    if (!inspection) return;
+
+    let product = inspection.product;
+    if (!product) {
+      product = await resolveOrCreateProduct({
+        declarations: declarations && declarations.length ? declarations : (inspection.extractedDeclarations || []),
+        rawOcr: rawOcr && Object.keys(rawOcr).length ? rawOcr : (inspection.rawOcrOutput || {}),
+        category,
+      });
+      if (product?.id) {
+        await prisma.inspection.update({
+          where: { id: inspectionId },
+          data: { productId: product.id },
+        });
+      }
+    }
+
+    await generateAndUploadReport({
+      inspection,
+      product,
+      violations: violations || [],
+      declarations: declarations && declarations.length ? declarations : (inspection.extractedDeclarations || []),
+      category,
+    });
+  } catch (err) {
+    log?.warn?.(`Artifact finalization warning for ${inspectionId}: ${err.message}`);
+  }
 }
 
 /** Upload the annotated image to Cloudinary and return its URL (null on failure). */
@@ -217,6 +288,16 @@ async function processPhotoScan({ inspectionId, imageBuffer, filename, category 
       });
     }
 
+    // Resolve or create Product & generate Cloudinary report
+    await finalizeInspectionArtifacts({
+      inspectionId,
+      category,
+      declarations: extractedDeclarations,
+      rawOcr: ocrResult,
+      violations: violationsData,
+      log,
+    });
+
   } catch (error) {
     log.error(error);
     await prisma.inspection.update({
@@ -251,12 +332,9 @@ async function processPhotoBatch({ inspectionId, images, category = "general", l
         ]);
         if (!ocr?.success) throw new Error(`OCR extraction failed for face ${faceIndex + 1}`);
         cloudinaryResult = upload;
-        ocrResult = extractAnnotatedImage(ocr).ocrSlim;
-        annotatedUrl = await hostAnnotatedImage(
-          extractAnnotatedImage(ocr).annotatedBase64,
-          filename,
-          log
-        );
+        const { annotatedBase64, ocrSlim } = extractAnnotatedImage(ocr);
+        ocrResult = ocrSlim;
+        annotatedUrl = await hostAnnotatedImage(annotatedBase64, filename, log);
         scanCache.set(imageHash, { cloudinaryResult, ocrResult, annotatedUrl });
       }
 
@@ -293,6 +371,15 @@ async function processPhotoBatch({ inspectionId, images, category = "general", l
         data: rows,
       });
     }
+    // Resolve or create Product & generate Cloudinary report
+    await finalizeInspectionArtifacts({
+      inspectionId,
+      category,
+      declarations: aggregated.declarations,
+      rawOcr: {},
+      violations: aggregated.violations,
+      log,
+    });
   } catch (error) {
     log.error(error);
     await prisma.inspection.update({
@@ -410,6 +497,15 @@ async function processMaskedScan({ inspectionId, inputs, source, category = "gen
         data: rows,
       });
     }
+    // Resolve or create Product & generate Cloudinary report
+    await finalizeInspectionArtifacts({
+      inspectionId,
+      category,
+      declarations: aggregated.declarations,
+      rawOcr: { source, category, face_count: aggregated.faceImages.length },
+      violations: aggregated.violations,
+      log,
+    });
   } catch (error) {
     log.error(error);
     await prisma.inspection.update({
@@ -441,7 +537,7 @@ async function handlePhotoScan(req, reply) {
     const maskEnabled = isMaskScanEnabled();
     const inspection = await prisma.inspection.create({
       data: {
-        inspectorId: req.user?.id || null,
+        ...getScanAttributionData(req.user),
         status: "PROCESSING",
         rawOcrOutput: { source: maskEnabled ? "image-masked" : "image", filename, category },
       },
@@ -490,7 +586,7 @@ async function handlePhotoBatch(req, reply) {
     const maskEnabled = isMaskScanEnabled();
     const inspection = await prisma.inspection.create({
       data: {
-        inspectorId: req.user?.id || null,
+        ...getScanAttributionData(req.user),
         status: "PROCESSING",
         rawOcrOutput: { source: maskEnabled ? "image-masked" : "image-batch", face_count: images.length, category },
       },
@@ -604,7 +700,7 @@ async function processVideoScanLegacy(req, reply) {
     // Step 4: Persist consolidated scan in DB
     const inspection = await prisma.inspection.create({
       data: {
-        inspectorId,
+        ...getScanAttributionData(req.user),
         imagePath: primaryFrame.image_url,
         annotatedImagePath: annotatedUrl,
         rawOcrOutput: {
@@ -641,6 +737,16 @@ async function processVideoScanLegacy(req, reply) {
         data: violationsData,
       });
     }
+
+    // Resolve or create Product & generate Cloudinary report
+    await finalizeInspectionArtifacts({
+      inspectionId: inspection.id,
+      category,
+      declarations: extractedDeclarations,
+      rawOcr: inspection.rawOcrOutput || {},
+      violations: violationsData,
+      log: req.log,
+    });
 
     const violations = await prisma.violation.findMany({
       where: { inspectionId: inspection.id },
@@ -731,9 +837,10 @@ async function processVideoScan({ inspectionId, videoBuffer, filename, log }) {
     );
 
     const primaryFrame = uploadedFrames[0];
+    const category = "general";
     const fullOcrResult = await runOcr(primaryFrame.buffer, primaryFrame.filename);
     if (!fullOcrResult?.success) throw new Error("OCR extraction failed for video frame");
-    const complianceResult = await evaluateOcrCompliance(fullOcrResult);
+    const complianceResult = await evaluateOcrCompliance(fullOcrResult, category);
     const { annotatedBase64, ocrSlim } = extractAnnotatedImage(fullOcrResult);
     const annotatedUrl = await hostAnnotatedImage(annotatedBase64, primaryFrame.filename, log);
     const extractedDeclarations = (complianceResult.summary?.what_was_found || []).map((d) => ({
@@ -775,6 +882,16 @@ async function processVideoScan({ inspectionId, videoBuffer, filename, log }) {
       evidenceBbox: v.evidence_bbox || null,
     }));
     if (violationsData.length) await prisma.violation.createMany({ data: violationsData });
+
+    // Resolve or create Product & generate Cloudinary report
+    await finalizeInspectionArtifacts({
+      inspectionId,
+      category,
+      declarations: extractedDeclarations,
+      rawOcr: ocrSlim || {},
+      violations: violationsData,
+      log,
+    });
   } catch (error) {
     log.error(error);
     await prisma.inspection.update({
@@ -804,7 +921,7 @@ async function handleVideoScan(req, reply) {
     const filename = data.filename || "video.mp4";
     const inspection = await prisma.inspection.create({
       data: {
-        inspectorId: req.user?.id || null,
+        ...getScanAttributionData(req.user),
         status: "PROCESSING",
         rawOcrOutput: { source: "video-masked", filename },
       },
@@ -825,6 +942,10 @@ async function getScanById(req, reply) {
       include: {
         violations: true,
         product: true,
+        reports: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
         inspector: {
           select: {
             id: true,
@@ -842,6 +963,11 @@ async function getScanById(req, reply) {
         error: "Not Found",
         message: "Scan not found",
       });
+    }
+
+    // Enforce Row-Level Security Scoping if caller is authenticated
+    if (req.user) {
+      assertInspectionAccess(req.user, inspection);
     }
 
     // Old rows may still carry multi-megabyte base64 blobs in rawOcrOutput —
@@ -884,13 +1010,15 @@ async function getScanById(req, reply) {
       product: inspection.product || null,
       image_path: inspection.imagePath,
       annotated_image_path: inspection.annotatedImagePath || null,
-      annotated_image_base64: inspection.rawOcrOutput?.annotated_image_base64 || null,
+      annotated_image_base64: null, // stripped; use annotated_image_path URL instead
       face_images: faceImages,
       created_at: inspection.createdAt,
       compliance_score: inspection.complianceScore,
       ocr_result: ocrOutput,
       extracted_declarations: inspection.extractedDeclarations,
       inspector: inspection.inspector,
+      report_url: inspection.reports?.[0]?.fileUrl || null,
+      report: inspection.reports?.[0] || null,
       violations: inspection.violations.map((v) => ({
         id: v.id,
         rule_code: v.ruleCode,
@@ -905,6 +1033,13 @@ async function getScanById(req, reply) {
       })),
     });
   } catch (error) {
+    if (error instanceof SecurityScopingError) {
+      return reply.code(403).send({
+        error: "Forbidden",
+        message: error.message,
+        details: error.details,
+      });
+    }
     req.log.error(error);
     return reply.code(500).send({
       error: "Internal Server Error",
@@ -922,9 +1057,12 @@ async function listScans(req, reply) {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
     const skip = (page - 1) * limit;
 
-    const where = {};
+    let where = {};
+    if (req.user) {
+      where = getInspectionScope(req.user);
+    }
     if (req.query.status) {
-      where.status = req.query.status.toUpperCase();
+      where = mergeScope(where, { status: req.query.status.toUpperCase() });
     }
 
     const [total, inspections] = await Promise.all([
@@ -944,6 +1082,12 @@ async function listScans(req, reply) {
           complianceScore: true,
           createdAt: true,
           violations: { select: { id: true } },
+          product: true,
+          reports: {
+            take: 1,
+            orderBy: { createdAt: "desc" },
+            select: { id: true, fileUrl: true, reportType: true },
+          },
         },
       }),
     ]);
@@ -953,16 +1097,29 @@ async function listScans(req, reply) {
       limit,
       total,
       total_pages: Math.ceil(total / limit),
-      items: inspections.map((ins) => ({
-        scan_id: ins.id,
-        status: ins.status,
-        image_path: ins.imagePath,
-        compliance_score: ins.complianceScore,
-        violations_count: ins.violations.length,
-        created_at: ins.createdAt,
-      })),
+      items: inspections.map((ins) => {
+        const latestReport = ins.reports?.[0];
+        return {
+          scan_id: ins.id,
+          status: ins.status,
+          image_path: ins.imagePath,
+          compliance_score: ins.complianceScore,
+          violations_count: ins.violations.length,
+          created_at: ins.createdAt,
+          product: ins.product || null,
+          report_url: latestReport?.fileUrl || null,
+          report: latestReport || null,
+        };
+      }),
     });
   } catch (error) {
+    if (error instanceof SecurityScopingError) {
+      return reply.code(403).send({
+        error: "Forbidden",
+        message: error.message,
+        details: error.details,
+      });
+    }
     req.log.error(error);
     return reply.code(500).send({
       error: "Internal Server Error",
@@ -1004,6 +1161,64 @@ async function searchStatutoryCorpus(req, reply) {
   }
 }
 
+async function getReportByScanId(req, reply) {
+  try {
+    const { scanId } = req.params;
+    const report = await prisma.report.findFirst({
+      where: mergeScope(getReportScope(req.user), { inspectionId: scanId }),
+      orderBy: { createdAt: "desc" },
+    });
+    if (!report) {
+      return reply.code(404).send({ error: "Not Found", message: "Report not found for this inspection" });
+    }
+    return reply.code(200).send(report);
+  } catch (err) {
+    req.log.error(err);
+    return reply.code(500).send({ error: "Internal Server Error", message: err.message });
+  }
+}
+
+async function listReports(req, reply) {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const reportScope = getReportScope(req.user);
+    const [total, reports] = await Promise.all([
+      prisma.report.count({ where: reportScope }),
+      prisma.report.findMany({
+        where: reportScope,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        include: {
+          inspection: {
+            select: {
+              id: true,
+              status: true,
+              complianceScore: true,
+              imagePath: true,
+              annotatedImagePath: true,
+              product: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    return reply.code(200).send({
+      page,
+      limit,
+      total,
+      items: reports,
+    });
+  } catch (err) {
+    req.log.error(err);
+    return reply.code(500).send({ error: "Internal Server Error", message: err.message });
+  }
+}
+
 export {
   handlePhotoScan,
   handlePhotoBatch,
@@ -1014,4 +1229,6 @@ export {
   getStatutoryCitations,
   searchStatutoryCorpus,
   extractAnnotatedImage,
+  getReportByScanId,
+  listReports,
 };

@@ -2,21 +2,29 @@ import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import api from '../services/api';
 import DashboardLayout from '../components/dashboard/DashboardLayout';
+import locations from '../constants/locations';
+
+const STATES = locations.map(({ state }) => state);
 
 export default function Inspections() {
   const location = useLocation();
+  // Search/filters are supervisory tools (Director/Controller/Reviewer view).
+  // Inspectors only ever see their own scans, so they get the plain list.
+  const role = api.getUser()?.role?.toUpperCase();
+  const showFilters = role !== 'INSPECTOR';
   // Seed from cache synchronously (fresh or stale) so revisiting the page
   // never flashes a skeleton, then revalidate in the background.
-  const [inspections, setInspections] = useState(() => api.peekInspections(1, 100)?.data?.items ?? []);
-  const [loading, setLoading] = useState(() => !api.peekInspections(1, 100));
+  const [inspections, setInspections] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [stateFilter, setStateFilter] = useState('');
+  const [districtFilter, setDistrictFilter] = useState('');
   const [pendingCount, setPendingCount] = useState(() => api.getPendingScans().length);
+  const districts = locations.find(({ state }) => state === stateFilter)?.districts || [];
 
   useEffect(() => {
-    const unsubscribe = api.subscribeInspections(1, 100, (d) => {
-      setInspections(d?.items ?? []);
-    });
     const handleResultsReady = () => {
       // The dashboard emits this as soon as a background scan changes from
       // PROCESSING to its final status. Reload now rather than waiting for a
@@ -32,7 +40,6 @@ export default function Inspections() {
       if (count) loadInspections();
     }, 4000);
     return () => {
-      unsubscribe();
       window.removeEventListener('almac:scan-results-ready', handleResultsReady);
       window.clearInterval(timer);
     };
@@ -40,7 +47,7 @@ export default function Inspections() {
 
   const loadInspections = async () => {
     try {
-      const data = await api.getInspections(1, 100);
+      const data = await api.getComplianceInspections(1, 100);
       setInspections(data.items || []);
       setError('');
     } catch (err) {
@@ -51,7 +58,22 @@ export default function Inspections() {
     }
   };
 
-  const filtered = filter === 'all' ? inspections : inspections.filter(i => i.status === filter);
+  const filtered = inspections.filter((inspection) => {
+    const query = searchQuery.trim().toLowerCase();
+    const searchable = [
+      inspection.id,
+      inspection.productName,
+      inspection.category,
+      inspection.inspector?.fullName,
+      inspection.inspector?.district,
+      inspection.inspector?.state,
+    ].filter(Boolean).join(' ').toLowerCase();
+    const matchesSearch = !query || searchable.includes(query);
+    const matchesStatus = filter === 'all' || inspection.status === filter;
+    const matchesState = !stateFilter || inspection.inspector?.state === stateFilter;
+    const matchesDistrict = !districtFilter || inspection.inspector?.district === districtFilter;
+    return matchesSearch && matchesStatus && matchesState && matchesDistrict;
+  });
 
   return (
     <DashboardLayout>
@@ -75,22 +97,63 @@ export default function Inspections() {
           </div>
         )}
 
-        {/* Filters */}
-        <div className="flex gap-2">
-          {['all', 'compliant', 'non_compliant', 'pending'].map(status => (
-            <button
-              key={status}
-              onClick={() => setFilter(status)}
-              className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${
-                filter === status
-                  ? 'bg-primary text-white shadow-md'
-                  : 'bg-surface-container-low text-on-surface-variant hover:bg-surface-container'
-              }`}
+        {/* Filters (supervisory roles only) */}
+        {showFilters && (
+        <div className="p-4 rounded-2xl bg-surface-container-lowest border border-outline-variant/30 shadow-sm space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            <input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search product, inspector, or scan ID"
+              className="h-10 px-3 rounded-xl bg-surface-container-low border border-outline-variant/50 text-sm text-on-surface placeholder:text-on-surface-variant/60 focus:outline-none focus:ring-2 focus:ring-primary/20"
+            />
+            <select
+              value={stateFilter}
+              onChange={(event) => {
+                setStateFilter(event.target.value);
+                setDistrictFilter('');
+              }}
+              className="h-10 px-3 rounded-xl bg-surface-container-low border border-outline-variant/50 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
             >
-              {status === 'all' ? 'All' : status === 'non_compliant' ? 'Non-Compliant' : status.charAt(0).toUpperCase() + status.slice(1)}
+              <option value="">All states</option>
+              {STATES.map((state) => <option key={state} value={state}>{state}</option>)}
+            </select>
+            <select
+              value={districtFilter}
+              onChange={(event) => setDistrictFilter(event.target.value)}
+              disabled={!stateFilter}
+              className="h-10 px-3 rounded-xl bg-surface-container-low border border-outline-variant/50 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
+            >
+              <option value="">{stateFilter ? 'All districts' : 'Select a state first'}</option>
+              {districts.map((district) => <option key={district} value={district}>{district}</option>)}
+            </select>
+            <select
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              className="h-10 px-3 rounded-xl bg-surface-container-low border border-outline-variant/50 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+            >
+              <option value="all">All statuses</option>
+              <option value="compliant">Compliant</option>
+              <option value="non_compliant">Non-Compliant</option>
+              <option value="pending">Pending</option>
+              <option value="escalated">Escalated</option>
+            </select>
+          </div>
+          {(searchQuery || stateFilter || districtFilter || filter !== 'all') && (
+            <button
+              onClick={() => {
+                setSearchQuery('');
+                setStateFilter('');
+                setDistrictFilter('');
+                setFilter('all');
+              }}
+              className="text-sm font-semibold text-primary hover:underline"
+            >
+              Clear filters
             </button>
-          ))}
+          )}
         </div>
+        )}
 
         {/* Content */}
         {loading ? (
@@ -165,14 +228,15 @@ export default function Inspections() {
                       </td>
                       <td className="px-6 py-4">
                         <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold ${
-                          inspection.status === 'compliant' ? 'bg-success-container text-on-success-container' : 
+                          inspection.status === 'compliant' ? 'bg-success-container text-on-success-container' :
                           inspection.status === 'pending' ? 'bg-secondary-container text-on-secondary-container' :
+                          inspection.status === 'escalated' ? 'bg-red-100 text-red-700' :
                           inspection.status === 'failed' ? 'bg-error-container text-on-error-container' : 'bg-error-container text-on-error-container'
                         }`}>
                           <span className="material-symbols-outlined text-[14px]">
-                            {inspection.status === 'compliant' ? 'check_circle' : inspection.status === 'pending' ? 'hourglass_top' : 'error'}
+                            {inspection.status === 'compliant' ? 'check_circle' : inspection.status === 'pending' ? 'hourglass_top' : inspection.status === 'escalated' ? 'crisis_alert' : inspection.status === 'failed' ? 'error' : 'gpp_bad'}
                           </span>
-                          {inspection.status === 'compliant' ? 'Compliant' : inspection.status === 'pending' ? 'Waiting for result' : inspection.status === 'failed' ? 'Processing failed' : 'Non-Compliant'}
+                          {inspection.status === 'compliant' ? 'Compliant' : inspection.status === 'pending' ? 'Waiting for result' : inspection.status === 'escalated' ? 'Escalated to Controller' : inspection.status === 'failed' ? 'Processing failed' : 'Non-Compliant'}
                         </span>
                       </td>
                       <td className="px-6 py-4 text-sm font-medium text-on-surface">{inspection.violationsCount ?? 0}</td>

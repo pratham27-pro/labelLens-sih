@@ -34,7 +34,7 @@ async function runTests() {
         email: testEmail,
         password: testPassword,
         fullName: "Test Inspector Officer",
-        role: "FIELD_INSPECTOR",
+        role: "INSPECTOR",
         district: "Varanasi",
         state: "Uttar Pradesh",
         badgeNumber: "BADGE-9988",
@@ -44,7 +44,7 @@ async function runTests() {
     const registerBody = JSON.parse(registerRes.payload);
     assert.ok(registerBody.token, "Token should be returned");
     assert.strictEqual(registerBody.user.email, testEmail);
-    assert.strictEqual(registerBody.user.role, "FIELD_INSPECTOR");
+    assert.strictEqual(registerBody.user.role, "INSPECTOR");
     testUserToken = registerBody.token;
     testUserId = registerBody.user.id;
     console.log("   ✓ User registered successfully with JWT and bcrypt hash\n");

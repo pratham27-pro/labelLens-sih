@@ -1,13 +1,23 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import api from '../services/api';
 import logo from '../assets/logo.png';
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const [formData, setFormData] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Honor the page the user was bounced from — ProtectedRoute saves it in
+  // location.state, and the session-expiry redirect passes ?next=.
+  const resolveDestination = () => {
+    const next = searchParams.get('next');
+    if (next && next.startsWith('/') && !next.startsWith('//')) return next;
+    return location.state?.from?.pathname || '/dashboard';
+  };
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -24,8 +34,8 @@ export default function Login() {
       
       api.setToken(response.token);
       api.setUser(response.user);
-      
-      navigate('/dashboard');
+
+      navigate(resolveDestination(), { replace: true });
     } catch (err) {
       setError(err.message || 'Invalid email or password');
     } finally {
@@ -122,7 +132,7 @@ export default function Login() {
             <div className="space-y-space-xs">
               <div className="flex items-center justify-between">
                 <label htmlFor="password" className="font-label-md text-label-md text-on-surface">Password</label>
-                <a href="#" className="font-label-sm text-label-sm text-primary hover:underline">Forgot password?</a>
+                <span className="font-label-sm text-label-sm text-on-surface-variant">Contact your administrator to reset your password</span>
               </div>
               <input
                 id="password"

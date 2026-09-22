@@ -60,7 +60,7 @@ export default function LandingPage() {
                       <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
                     </Link>
                     <Link
-                      to="/regulatory-standards"
+                      to="/standards"
                       className="px-space-md py-3 rounded-lg bg-surface-container-low hover:bg-surface-container text-on-surface border border-outline-variant font-label-lg text-label-lg font-medium transition-colors flex items-center gap-2"
                     >
                       <span className="material-symbols-outlined text-[18px] text-primary">policy</span>

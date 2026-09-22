@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import logo from '../assets/logo.png';
+import locations from '../constants/locations';
+
+const STATES = locations.map(({ state }) => state);
 
 export default function Register() {
   const navigate = useNavigate();
@@ -9,16 +12,20 @@ export default function Register() {
     email: '',
     password: '',
     fullName: '',
-    role: 'FIELD_INSPECTOR',
+    role: 'INSPECTOR',
     district: '',
     state: '',
     badgeNumber: '',
   });
+  const selectedLocation = locations.find(({ state }) => state === formData.state);
+  const districts = selectedLocation?.districts || [];
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    const nextFormData = { ...formData, [e.target.name]: e.target.value };
+    if (e.target.name === 'state') nextFormData.district = '';
+    setFormData(nextFormData);
     setError('');
   };
 
@@ -28,7 +35,30 @@ export default function Register() {
     setLoading(true);
 
     try {
-      const response = await api.register(formData);
+      const governmentRoles = [
+        'DIRECTOR',
+        'CONTROLLER',
+        'REVIEWER',
+        'INSPECTOR',
+      ];
+      const isGovernmentRole = governmentRoles.includes(formData.role);
+      const registrationData = {
+        email: formData.email.trim(),
+        password: formData.password,
+        fullName: formData.fullName.trim(),
+        role: formData.role,
+        ...(isGovernmentRole
+          ? {
+              badgeNumber: formData.badgeNumber.trim(),
+              district: formData.district.trim(),
+              state: formData.state.trim(),
+            }
+          : {}),
+      };
+      const payload = Object.fromEntries(
+        Object.entries(registrationData).filter(([, value]) => value !== '')
+      );
+      const response = await api.register(payload);
       
       // Auto-login after registration
       api.setToken(response.token);
@@ -160,54 +190,65 @@ export default function Register() {
                 onChange={handleChange}
                 className="w-full h-10 px-space-md rounded-lg bg-surface-container-lowest border border-outline-variant text-on-surface font-body-md focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
               >
-                <option value="FIELD_INSPECTOR">Field Inspector</option>
-                <option value="DISTRICT_OFFICER">District Officer</option>
-                <option value="STATE_CONTROLLER">State Controller</option>
-                <option value="ADMIN">System Administrator</option>
+                <option value="DIRECTOR">Director</option>
+                <option value="CONTROLLER">Controller</option>
+                <option value="REVIEWER">Reviewer</option>
+                <option value="INSPECTOR">Inspector</option>
+                <option value="MANUFACTURER">Manufacturer</option>
+                <option value="CONSUMER">Consumer</option>
               </select>
             </div>
 
-            {/* District & State */}
-            <div className="grid grid-cols-2 gap-space-md">
-              <div className="space-y-space-xs">
-                <label htmlFor="district" className="font-label-md text-label-md text-on-surface">District</label>
-                <input
-                  id="district"
-                  name="district"
-                  type="text"
-                  value={formData.district}
-                  onChange={handleChange}
-                  placeholder="Varanasi"
-                  className="w-full h-10 px-space-md rounded-lg bg-surface-container-lowest border border-outline-variant text-on-surface font-body-md placeholder:text-on-surface-variant/50 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-space-xs">
-                <label htmlFor="state" className="font-label-md text-label-md text-on-surface">State</label>
-                <input
-                  id="state"
-                  name="state"
-                  type="text"
-                  value={formData.state}
-                  onChange={handleChange}
-                  placeholder="Uttar Pradesh"
-                  className="w-full h-10 px-space-md rounded-lg bg-surface-container-lowest border border-outline-variant text-on-surface font-body-md placeholder:text-on-surface-variant/50 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                />
-              </div>
-            </div>
+            {['DIRECTOR', 'CONTROLLER', 'REVIEWER', 'INSPECTOR'].includes(formData.role) && (
+              <>
+                {/* Badge Number */}
+                <div className="space-y-space-xs">
+                  <label htmlFor="badgeNumber" className="font-label-md text-label-md text-on-surface">Badge Number</label>
+                  <input
+                    id="badgeNumber"
+                    name="badgeNumber"
+                    type="text"
+                    value={formData.badgeNumber}
+                    onChange={handleChange}
+                    placeholder="UP-LM-4821"
+                    className="w-full h-10 px-space-md rounded-lg bg-surface-container-lowest border border-outline-variant text-on-surface font-body-md placeholder:text-on-surface-variant/50 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                  />
+                </div>
 
-            {/* Badge Number */}
-            <div className="space-y-space-xs">
-              <label htmlFor="badgeNumber" className="font-label-md text-label-md text-on-surface">Badge Number</label>
-              <input
-                id="badgeNumber"
-                name="badgeNumber"
-                type="text"
-                value={formData.badgeNumber}
-                onChange={handleChange}
-                placeholder="UP-LM-4821"
-                className="w-full h-10 px-space-md rounded-lg bg-surface-container-lowest border border-outline-variant text-on-surface font-body-md placeholder:text-on-surface-variant/50 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-              />
-            </div>
+                {/* District & State */}
+                <div className="grid grid-cols-2 gap-space-md">
+                  <div className="space-y-space-xs">
+                    <label htmlFor="district" className="font-label-md text-label-md text-on-surface">District{formData.role === 'CONTROLLER' ? ' *' : ''}</label>
+                    <select
+                      id="district"
+                      name="district"
+                      disabled={!formData.state}
+                      required={formData.role === 'CONTROLLER'}
+                      value={formData.district}
+                      onChange={handleChange}
+                      className="w-full h-10 px-space-md rounded-lg bg-surface-container-lowest border border-outline-variant text-on-surface font-body-md placeholder:text-on-surface-variant/50 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                    >
+                      <option value="">Select district</option>
+                      {districts.map((district) => <option key={district} value={district}>{district}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-space-xs">
+                    <label htmlFor="state" className="font-label-md text-label-md text-on-surface">State</label>
+                    <select
+                      id="state"
+                      name="state"
+                      required
+                      value={formData.state}
+                      onChange={handleChange}
+                      className="w-full h-10 px-space-md rounded-lg bg-surface-container-lowest border border-outline-variant text-on-surface font-body-md placeholder:text-on-surface-variant/50 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                    >
+                      <option value="">Select state</option>
+                      {STATES.map((state) => <option key={state} value={state}>{state}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* Submit */}
             <button

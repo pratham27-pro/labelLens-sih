@@ -21,7 +21,7 @@ export default function Reports() {
     setLoading(true);
     setError('');
     try {
-      const data = await api.getInspections(1, 100);
+      const data = await api.getComplianceInspections(1, 100);
       setInspections(data?.items || []);
     } catch (err) {
       console.error(err);
@@ -35,7 +35,7 @@ export default function Reports() {
     setLoadingReportId(inspectionSummary.id);
     try {
       // Fetch complete inspection detail with violations & bounding box image
-      const fullDetail = await api.getInspection(inspectionSummary.id);
+      const fullDetail = await api.getComplianceInspection(inspectionSummary.id);
       setSelectedInspection(fullDetail || inspectionSummary);
     } catch (err) {
       console.warn('Could not fetch full detail, using summary:', err);
@@ -81,10 +81,16 @@ export default function Reports() {
 
     const isPass = item.status === 'compliant' || item.status === 'COMPLIANT';
     const isViolation = item.status === 'non_compliant' || item.status === 'NON_COMPLIANT' || item.status === 'failed' || item.status === 'FAILED';
+    const isEscalated = item.status === 'escalated' || item.status === 'ESCALATED';
+    // Escalation also stamps reviewerId for attribution — that is not an
+    // approval, so exclude escalated rows from the Approved filter.
+    const isApproved = !isEscalated && (item.reviewer != null || item.reviewerId != null);
     const matchesStatus =
       statusFilter === 'ALL' ||
       (statusFilter === 'COMPLIANT' && isPass) ||
-      (statusFilter === 'NON_COMPLIANT' && isViolation);
+      (statusFilter === 'NON_COMPLIANT' && isViolation) ||
+      (statusFilter === 'ESCALATED' && isEscalated) ||
+      (statusFilter === 'APPROVED' && isApproved);
 
     return matchesSearch && matchesStatus;
   });
@@ -93,9 +99,13 @@ export default function Reports() {
   const totalCount = inspections.length;
   const compliantCount = inspections.filter((i) => i.status === 'compliant' || i.status === 'COMPLIANT').length;
   const violationCount = inspections.filter((i) => i.status === 'non_compliant' || i.status === 'NON_COMPLIANT' || i.status === 'failed' || i.status === 'FAILED').length;
+  const escalatedCount = inspections.filter((i) => i.status === 'escalated' || i.status === 'ESCALATED').length;
+  const approvedCount = inspections.filter(
+    (i) => !(i.status === 'escalated' || i.status === 'ESCALATED') && (i.reviewer != null || i.reviewerId != null)
+  ).length;
   const avgScore = totalCount
     ? Math.round(inspections.reduce((acc, i) => acc + (i.complianceScore ?? 0), 0) / totalCount)
-    : 100;
+    : null;
 
   return (
     <DashboardLayout>
@@ -106,7 +116,7 @@ export default function Reports() {
           <div>
             <h1 className="text-3xl font-bold text-on-surface mb-1">Statutory Compliance Reports</h1>
             <p className="text-on-surface-variant text-sm">
-              Generate, print, and export official Legal Metrology PCR 2011 audit certificates with bounding-box evidence.
+              Generate, print, and export official Legal Metrology PCR 2011 audit reports with bounding-box evidence.
             </p>
           </div>
 
@@ -163,7 +173,7 @@ export default function Reports() {
               <span className="text-xs font-semibold text-secondary uppercase tracking-wider">Average Compliance</span>
               <span className="material-symbols-outlined text-secondary text-xl">speed</span>
             </div>
-            <div className="text-3xl font-bold text-on-surface mt-2">{avgScore}%</div>
+            <div className="text-3xl font-bold text-on-surface mt-2">{avgScore != null ? `${avgScore}%` : '—'}</div>
             <div className="text-xs text-on-surface-variant mt-1">Across all categories</div>
           </div>
         </div>
@@ -216,6 +226,26 @@ export default function Reports() {
               }`}
             >
               Violations ({violationCount})
+            </button>
+            <button
+              onClick={() => setStatusFilter('ESCALATED')}
+              className={`flex-1 sm:flex-none px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                statusFilter === 'ESCALATED'
+                  ? 'bg-surface-container-lowest text-red-700 shadow-sm'
+                  : 'text-on-surface-variant hover:text-on-surface'
+              }`}
+            >
+              Escalated ({escalatedCount})
+            </button>
+            <button
+              onClick={() => setStatusFilter('APPROVED')}
+              className={`flex-1 sm:flex-none px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                statusFilter === 'APPROVED'
+                  ? 'bg-surface-container-lowest text-indigo-700 shadow-sm'
+                  : 'text-on-surface-variant hover:text-on-surface'
+              }`}
+            >
+              Approved ({approvedCount})
             </button>
           </div>
 
@@ -270,6 +300,9 @@ export default function Reports() {
                 <tbody className="divide-y divide-outline-variant/20 font-body-sm text-sm">
                   {filteredInspections.map((item) => {
                     const isPass = item.status === 'compliant' || item.status === 'COMPLIANT';
+                    const isEscalated = item.status === 'escalated' || item.status === 'ESCALATED';
+                    const isPending = item.status === 'pending' || item.status === 'PENDING';
+                    const isApproved = !isEscalated && (item.reviewer != null || item.reviewerId != null);
                     const thumbnail = item.annotatedImageUrl || item.annotatedImagePath || item.imageUrl;
 
                     return (
@@ -312,18 +345,30 @@ export default function Reports() {
 
                         {/* Status */}
                         <td className="py-3.5 px-6">
-                          <span
-                            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${
-                              isPass
-                                ? 'bg-success-container text-on-success-container'
-                                : 'bg-error-container text-on-error-container'
-                            }`}
-                          >
-                            <span className="material-symbols-outlined text-[14px]">
-                              {isPass ? 'check_circle' : 'warning'}
+                          <div className="flex flex-col items-start gap-1">
+                            <span
+                              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${
+                                isEscalated
+                                  ? 'bg-red-100 text-red-700'
+                                  : isPending
+                                    ? 'bg-amber-100 text-amber-700'
+                                    : isPass
+                                      ? 'bg-success-container text-on-success-container'
+                                      : 'bg-error-container text-on-error-container'
+                              }`}
+                            >
+                              <span className="material-symbols-outlined text-[14px]">
+                                {isEscalated ? 'crisis_alert' : isPending ? 'hourglass_top' : isPass ? 'check_circle' : 'gpp_bad'}
+                              </span>
+                              {isEscalated ? 'Escalated' : isPending ? 'Pending' : isPass ? 'Compliant (Pass)' : `${item.violationsCount || 1} Violation(s)`}
                             </span>
-                            {isPass ? 'Compliant (Pass)' : `${item.violationsCount || 1} Violation(s)`}
-                          </span>
+                            {isApproved && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700">
+                                <span className="material-symbols-outlined text-[12px]">task_alt</span>
+                                QA approved{item.reviewer?.fullName ? ` · ${item.reviewer.fullName}` : ''}
+                              </span>
+                            )}
+                          </div>
                         </td>
 
                         {/* Compliance Score */}
@@ -357,8 +402,8 @@ export default function Reports() {
                                 </>
                               ) : (
                                 <>
-                                  <span className="material-symbols-outlined text-[16px]">print</span>
-                                  Print / PDF Report
+                                  <span className="material-symbols-outlined text-[16px]">download</span>
+                                  PDF Report
                                 </>
                               )}
                             </button>

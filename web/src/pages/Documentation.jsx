@@ -26,7 +26,7 @@ export default function Documentation() {
               <div className="p-space-md bg-surface-container border-b border-outline-variant/30">
                 <h3 className="font-label-lg text-label-lg text-on-surface font-semibold mb-2">Base URL</h3>
                 <code className="block p-space-sm bg-surface-container-lowest rounded border border-outline-variant/30 text-primary font-body-md font-mono">
-                  http://localhost:3000/api/v1
+                  /api/v1  (relative — override with VITE_API_URL)
                 </code>
               </div>
               

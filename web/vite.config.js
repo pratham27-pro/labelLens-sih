@@ -13,6 +13,13 @@ export default defineConfig({
         target: 'http://localhost:3000',
         changeOrigin: true,
       },
+      // Direct-FastAPI fallback (OCR compute) is reached via the relative
+      // /fastapi/* prefix so it also works behind a single origin.
+      '/fastapi': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/fastapi/, ''),
+      },
     },
   },
 })

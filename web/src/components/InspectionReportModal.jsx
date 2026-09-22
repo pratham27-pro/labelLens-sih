@@ -1,4 +1,5 @@
-import React, { Component } from 'react';
+import React, { Component, useState } from 'react';
+import api from '../services/api';
 
 // Error boundary to protect modal from ever crashing the page
 class ReportErrorBoundary extends Component {
@@ -301,6 +302,10 @@ function resolveDeclarationInfo(d, idx) {
 }
 
 function ReportModalContent({ inspection, onClose }) {
+  // Hooks live above the early return: this component mounts with a null
+  // report (Controller dashboard) and must keep a stable hook order.
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
   if (!inspection) return null;
 
   const isCompliant = inspection.status === 'compliant' || inspection.status === 'COMPLIANT';
@@ -331,97 +336,29 @@ function ReportModalContent({ inspection, onClose }) {
   );
 
   const evidenceImage = inspection.annotatedImageUrl || inspection.annotatedImagePath || inspection.imageUrl;
-  const originalImage = inspection.imageUrl;
+  // Faces may not carry their own Cloudinary original (image_url is null when
+  // only the annotated render was uploaded) — fall back to the inspection's
+  // main image, mirroring the detail page behaviour.
+  const originalImage = inspection.imageUrl || inspection.imagePath || inspection.image_url;
   const faceImages = Array.isArray(inspection.faceImages) ? inspection.faceImages : [];
 
-  const handlePrint = () => {
-    const reportElem = document.getElementById('printable-report');
-    if (!reportElem) {
-      window.print();
-      return;
+  // Downloads the PDF as an exact snapshot of this preview — the report DOM
+  // is captured and sliced into clean A4 pages, so layout, colors, badges and
+  // evidence images match the screen 1:1 (no print dialog involved).
+  const handleDownloadPdf = async () => {
+    setDownloading(true);
+    setDownloadError('');
+    try {
+      const { generatePdfFromElement } = await import('../utils/generateReportPdf');
+      await generatePdfFromElement(
+        document.getElementById('printable-report'),
+        `ALMAC_Report_${String(inspection.id || 'scan').slice(0, 8).toUpperCase()}.pdf`
+      );
+    } catch (err) {
+      setDownloadError(err.message || 'Could not generate the PDF report.');
+    } finally {
+      setDownloading(false);
     }
-
-    // Create or reuse hidden iframe
-    let printFrame = document.getElementById('almac-print-frame');
-    if (printFrame) {
-      printFrame.remove();
-    }
-    
-    printFrame = document.createElement('iframe');
-    printFrame.id = 'almac-print-frame';
-    printFrame.style.position = 'fixed';
-    printFrame.style.right = '0';
-    printFrame.style.bottom = '0';
-    printFrame.style.width = '0';
-    printFrame.style.height = '0';
-    printFrame.style.border = '0';
-    document.body.appendChild(printFrame);
-
-    const frameDoc = printFrame.contentWindow.document;
-    frameDoc.open();
-    frameDoc.write(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="utf-8">
-          <title>ALMAC_Statutory_Compliance_Report_${String(inspection.id || 'scan').slice(0, 8)}</title>
-          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0">
-          <script src="https://cdn.tailwindcss.com"></script>
-          <style>
-            @page {
-              size: A4 portrait;
-              margin: 10mm;
-            }
-            * {
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
-            }
-            body {
-              margin: 0;
-              padding: 16px;
-              font-family: 'Inter', sans-serif;
-              background-color: #ffffff !important;
-              color: #0f172a !important;
-            }
-            .avoid-break {
-              break-inside: avoid !important;
-              page-break-inside: avoid !important;
-            }
-            .face-report-page {
-              break-before: page !important;
-              page-break-before: always !important;
-            }
-            img {
-              max-width: 100%;
-              height: auto;
-              object-fit: contain;
-            }
-            table {
-              border-collapse: collapse;
-              width: 100%;
-            }
-          </style>
-        </head>
-        <body class="bg-white text-slate-900">
-          <div class="space-y-6">
-            ${reportElem.innerHTML}
-          </div>
-        </body>
-      </html>
-    `);
-    frameDoc.close();
-
-    // Give iframe time to parse Tailwind and load images before printing
-    setTimeout(() => {
-      try {
-        printFrame.contentWindow.focus();
-        printFrame.contentWindow.print();
-      } catch (e) {
-        console.error('Iframe print error, falling back to window.print():', e);
-        window.print();
-      }
-    }, 450);
   };
 
   return (
@@ -440,11 +377,12 @@ function ReportModalContent({ inspection, onClose }) {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={handlePrint}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-lg flex items-center gap-2 transition-all shadow-sm"
+              onClick={handleDownloadPdf}
+              disabled={downloading}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-lg flex items-center gap-2 transition-all shadow-sm disabled:opacity-60"
             >
-              <span className="material-symbols-outlined text-[18px]">print</span>
-              Print / Save PDF
+              <span className="material-symbols-outlined text-[18px]">{downloading ? 'hourglass_top' : 'download'}</span>
+              {downloading ? 'Preparing PDF…' : 'Download PDF'}
             </button>
             <button
               onClick={onClose}
@@ -458,6 +396,11 @@ function ReportModalContent({ inspection, onClose }) {
 
         {/* Printable Report Body */}
         <div className="overflow-y-auto p-6 md:p-10 space-y-6" id="printable-report">
+          {downloadError && (
+            <div className="no-print px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-sm font-semibold text-red-700">
+              {downloadError}
+            </div>
+          )}
           
           {/* Government / Department Official Header */}
           <div className="border-b-2 border-slate-900 pb-4 flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
@@ -541,11 +484,11 @@ function ReportModalContent({ inspection, onClose }) {
             </div>
             <div>
               <span className="text-slate-500 block uppercase font-medium text-[10px]">Inspecting Officer</span>
-              <span className="font-semibold text-slate-800">{safeString(inspection.inspector?.fullName || inspection.inspector?.email, 'Officer Verma (Field Inspector)')}</span>
+              <span className="font-semibold text-slate-800">{safeString(inspection.inspector?.fullName || inspection.inspector?.email, 'Not recorded')}</span>
             </div>
             <div>
               <span className="text-slate-500 block uppercase font-medium text-[10px]">Jurisdiction / Unit</span>
-              <span className="font-semibold text-slate-800">{safeString(inspection.inspector?.district, 'Central Enforcement Unit')}</span>
+              <span className="font-semibold text-slate-800">{safeString(inspection.inspector?.district || inspection.inspector?.state, 'Not recorded')}</span>
             </div>
             <div>
               <span className="text-slate-500 block uppercase font-medium text-[10px]">Statutory Assessment</span>
@@ -575,7 +518,10 @@ function ReportModalContent({ inspection, onClose }) {
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {[['Annotated bounding boxes', face.annotated_image_path], ['Original packaging photo', face.image_url]].map(([label, src]) => (
+                  {[
+                    ['Annotated bounding boxes', face.annotated_image_path || face.annotatedImagePath || evidenceImage],
+                    ['Original packaging photo', face.image_url || face.imagePath || face.image_path || originalImage],
+                  ].map(([label, src]) => (
                     <div key={label} className="rounded-xl border border-slate-300 overflow-hidden bg-white">
                       <div className="p-2 bg-slate-100 text-[11px] font-mono font-semibold text-slate-700">{label}</div>
                       <div className="h-56 flex items-center justify-center p-3">
@@ -657,7 +603,7 @@ function ReportModalContent({ inspection, onClose }) {
                   )}
                 </div>
                 <div className="p-2 bg-slate-50 text-[10px] text-slate-600 border-t border-slate-200">
-                  Original packaging sample archived on secure Cloudinary CDN.
+                  Original packaging sample archived in secure evidence storage.
                 </div>
               </div>
             </div>
@@ -820,10 +766,13 @@ function ReportModalContent({ inspection, onClose }) {
             <div className="text-[11px] text-slate-500 max-w-md space-y-1">
               <p className="font-bold text-slate-700 uppercase">Statutory Notice Disclaimer:</p>
               <p>
-                This document is generated by ALMAC (Automated Legal Metrology Compliance Engine) with cryptographic timestamping. 
-                Certified for evidentiary submission under Section 18 of Legal Metrology Act, 2009.
+                This document is generated by ALMAC (Automated Legal Metrology Compliance Engine) and preserved as an
+                immutable audit record. Certified for evidentiary submission under Section 18 of Legal Metrology Act, 2009.
               </p>
-              <p className="font-mono text-[10px]">SHA-256 Hash: {String(inspection.id || 'hash').repeat(2).slice(0, 48)}</p>
+              <p className="font-mono text-[10px]">
+                Audit Ref: {String(inspection.id || 'scan').slice(0, 8).toUpperCase()}
+                {inspection.createdAt ? ` · Generated ${new Date(inspection.createdAt).toLocaleString('en-IN')}` : ''}
+              </p>
             </div>
 
             <div className="text-center md:text-right border-t md:border-t-0 pt-3 md:pt-0 w-full md:w-auto">
@@ -854,11 +803,12 @@ function ReportModalContent({ inspection, onClose }) {
               Close
             </button>
             <button
-              onClick={handlePrint}
-              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-lg flex items-center gap-2 transition-all shadow-md"
+              onClick={handleDownloadPdf}
+              disabled={downloading}
+              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-lg flex items-center gap-2 transition-all shadow-md disabled:opacity-60"
             >
-              <span className="material-symbols-outlined text-[18px]">print</span>
-              Print / Save PDF
+              <span className="material-symbols-outlined text-[18px]">{downloading ? 'hourglass_top' : 'download'}</span>
+              {downloading ? 'Preparing PDF…' : 'Download PDF'}
             </button>
           </div>
         </div>

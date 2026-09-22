@@ -24,27 +24,27 @@ export default function Footer() {
           <div>
             <h4 className="font-label-lg text-label-lg text-on-surface mb-space-sm uppercase tracking-wider">Legal & Statutory</h4>
             <ul className="space-y-space-xs">
-              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><a href="#">Legal Metrology Act (2009)</a></li>
-              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><a href="#">Packaged Commodities Rules</a></li>
-              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><a href="#">Statutory Disclaimers</a></li>
+              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><span title="Coming soon" className="cursor-default">Legal Metrology Act (2009)</span></li>
+              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><span title="Coming soon" className="cursor-default">Packaged Commodities Rules</span></li>
+              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><span title="Coming soon" className="cursor-default">Statutory Disclaimers</span></li>
             </ul>
           </div>
 
           <div>
             <h4 className="font-label-lg text-label-lg text-on-surface mb-space-sm uppercase tracking-wider">Platform</h4>
             <ul className="space-y-space-xs">
-              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><a href="#">Verification Engine</a></li>
-              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><a href="#">API Reference</a></li>
-              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><a href="#">Rule Mapping Matrix</a></li>
+              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><span title="Coming soon" className="cursor-default">Verification Engine</span></li>
+              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><span title="Coming soon" className="cursor-default">API Reference</span></li>
+              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><span title="Coming soon" className="cursor-default">Rule Mapping Matrix</span></li>
             </ul>
           </div>
 
           <div>
             <h4 className="font-label-lg text-label-lg text-on-surface mb-space-sm uppercase tracking-wider">Governance</h4>
             <ul className="space-y-space-xs">
-              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><a href="#">Privacy Policy</a></li>
-              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><a href="#">Data Integrity & Security</a></li>
-              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><a href="#">Regulatory Helpdesk</a></li>
+              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><span title="Coming soon" className="cursor-default">Privacy Policy</span></li>
+              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><span title="Coming soon" className="cursor-default">Data Integrity & Security</span></li>
+              <li className="font-body-sm text-body-sm text-on-surface-variant hover:text-on-surface"><span title="Coming soon" className="cursor-default">Regulatory Helpdesk</span></li>
             </ul>
           </div>
         </div>

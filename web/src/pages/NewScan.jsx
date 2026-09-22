@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../services/api';
 import DashboardLayout from '../components/dashboard/DashboardLayout';
 
@@ -17,6 +17,8 @@ const MAX_FILES = 10;
 
 export default function NewScan() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const complaintId = searchParams.get('complaint');
   const inputRef = useRef(null);
   const [selectedCategory, setSelectedCategory] = useState('general');
   const [files, setFiles] = useState([]);
@@ -90,6 +92,15 @@ export default function NewScan() {
           <p className="text-on-surface-variant">
             Select the regulated commodity category and upload package photos or a 360° video.
           </p>
+          {complaintId && (
+            <div className="mt-4 flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200">
+              <span className="material-symbols-outlined text-amber-600 text-[20px]">assignment_late</span>
+              <p className="text-sm text-amber-800">
+                Field inspection for complaint <span className="font-mono font-bold">{complaintId.slice(0, 8).toUpperCase()}</span>.
+                The result will be linked from your Assigned Tasks once processed.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Category Selector */}

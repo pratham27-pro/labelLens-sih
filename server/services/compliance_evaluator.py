@@ -381,6 +381,7 @@ class ComplianceEvaluator:
             "consumer_care": (self._is_consumer_care, lambda b: self._eval_consumer_care(b, img_height)),
             "manufacturer_details": (self._is_manufacturer_details, lambda b: self._eval_manufacturer_details(b, img_height)),
             "country_of_origin": (self._is_country_of_origin, lambda b: self._eval_country_of_origin(b, img_height)),
+            "fssai_license": (self._is_fssai_license, lambda b: self._eval_fssai_license(b, img_height, doc_norm)),
         }
 
         matchers = []
@@ -859,7 +860,82 @@ class ComplianceEvaluator:
     def _is_country_of_origin(self, text: str) -> bool:
         return _has_keyword(normalize_phrase(text), _COUNTRY_KEYWORDS)
 
+    def _is_fssai_license(self, text: str) -> bool:
+        t_upper = text.upper()
+        if any(kw in t_upper for kw in ["FSSAI", "LIC NO", "LICENSE NO", "LIC. NO", "FSSAI LIC"]):
+            return True
+        flat_digits = re.sub(r"[^\d]", "", text)
+        return bool(re.search(r"\b[12]\d{13}\b", text)) or (len(flat_digits) == 14 and flat_digits.startswith(("1", "2")))
+
     # --- Rule Evaluators ---
+
+    def _eval_fssai_license(self, block: TextBlock, img_height: int, doc_norm: Optional[str] = None) -> tuple[DeclarationFound, List[ViolationDetail]]:
+        est_font = self._estimate_font_mm(block.size.estimated_font_size_px, img_height)
+        size_valid = est_font >= 1.0
+
+        fssai_number = None
+        m = re.search(r"\b([12]\d{13})\b", block.text)
+        if not m:
+            m = re.search(r"\b(\d{14})\b", block.text)
+        if m:
+            fssai_number = m.group(1)
+        else:
+            despaced = re.sub(r"[^\d]", "", block.text)
+            m_despaced = re.search(r"([12]\d{13})", despaced)
+            if m_despaced:
+                fssai_number = m_despaced.group(1)
+            elif doc_norm:
+                m_doc = re.search(r"FSSAI[^\d]{0,25}([12]\d{13})", doc_norm, re.IGNORECASE)
+                if m_doc:
+                    fssai_number = m_doc.group(1)
+
+        viols: List[ViolationDetail] = []
+        format_valid = bool(fssai_number)
+
+        if not format_valid:
+            viols.append(
+                ViolationDetail(
+                    id=f"viol_fssai_invalid_{uuid.uuid4().hex[:12]}",
+                    rule_id="fssai_license",
+                    field_name="FSSAI License Number & Logo",
+                    violation_type="invalid_format",
+                    severity="CRITICAL",
+                    description="FSSAI License number on packaging is invalid or missing the required 14-digit numeric format mandated by FSSAI Food Safety & Standards (Labelling and Display) Regulations, 2020.",
+                    evidence_bbox=block.bbox,
+                    detected_on_package=block.text.strip(),
+                    expected_on_package="14-digit numeric license number (e.g. 10012022000123)",
+                    package_element="FSSAI License & Logo Panel (Food Packaging)"
+                )
+            )
+
+        if not size_valid:
+            viols.append(
+                ViolationDetail(
+                    id=f"viol_fssai_font_{uuid.uuid4().hex[:12]}",
+                    rule_id="fssai_license",
+                    field_name="FSSAI License Number & Logo",
+                    violation_type="size_below_standard",
+                    severity="MINOR",
+                    description=f"FSSAI declaration font size ({est_font}mm) is below minimum required height (1.0mm).",
+                    evidence_bbox=block.bbox,
+                    detected_on_package=block.text.strip(),
+                    expected_on_package="Minimum 1.0mm numeral font height",
+                    package_element="FSSAI License & Logo Panel (Food Packaging)"
+                )
+            )
+
+        decl = DeclarationFound(
+            id="fssai_license",
+            field_name="FSSAI License Number & Logo",
+            extracted_text=f"FSSAI Lic. No. {fssai_number}" if fssai_number else block.text.strip(),
+            confidence=round(block.confidence, 2),
+            bbox=block.bbox,
+            font_size_px=block.size.estimated_font_size_px,
+            font_size_mm_est=est_font,
+            format_valid=format_valid,
+            size_valid=size_valid,
+        )
+        return decl, viols
 
     def _eval_mrp(self, block: TextBlock, ocr_result: OCRScanResult,
                   doc_norm: Optional[str] = None) -> tuple[DeclarationFound, List[ViolationDetail]]:
@@ -1189,7 +1265,7 @@ class ComplianceEvaluator:
         """Estimates physical font height in mm based on pixel scaling."""
         # Standard packaging photo physical height ~150mm
         est_mm = (font_size_px / max(img_height_px, 1)) * 150.0
-        return round(max(est_mm, 1.0), 1)
+        return round(est_mm, 1)
 
 
 # Helper function to evaluate image compliance directly

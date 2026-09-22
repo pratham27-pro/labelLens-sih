@@ -1,12 +1,17 @@
 // Base URL: relative by default so the Vite dev proxy (and any reverse proxy in
 // production) handles the host. Override with VITE_API_URL when needed.
-const API_BASE_URL = import.meta.env?.VITE_API_URL || "http://localhost:3000/api/v1";
+const API_BASE_URL = import.meta.env?.VITE_API_URL || "/api/v1";
 const NODE_API_BASE = API_BASE_URL;
-const FASTAPI_BASE = import.meta.env?.VITE_FASTAPI_URL || "http://127.0.0.1:8000/api/v1";
+// FastAPI compute engine reached via the /fastapi prefix (proxied in dev by
+// vite.config.js; override with VITE_FASTAPI_URL for direct access).
+const FASTAPI_BASE = import.meta.env?.VITE_FASTAPI_URL || "/fastapi/api/v1";
 
 // Cap every request so a hung server/proxy can never leave a background
 // revalidation pending forever (which would freeze the cache on stale data).
 const REQUEST_TIMEOUT_MS = 30_000;
+// Uploads and video scans move much larger payloads — give them headroom.
+const UPLOAD_TIMEOUT_MS = 180_000;
+const VIDEO_TIMEOUT_MS = 600_000;
 
 // ---------------------------------------------------------------------------
 // In-memory cache for GET responses with stale-while-revalidate semantics.
@@ -154,10 +159,7 @@ async function request(path, { method = "GET", body, formData, auth = true } = {
 
   if (!response.ok) {
     if (response.status === 401 && auth) {
-      api.clearSession();
-      if (!window.location.pathname.startsWith("/login")) {
-        window.location.assign("/login");
-      }
+      handleUnauthorized();
     }
     const message =
       data?.message ||
@@ -169,11 +171,47 @@ async function request(path, { method = "GET", body, formData, auth = true } = {
   return data;
 }
 
+// Single flight handler for session expiry: clears the session and redirects
+// to /login exactly once, carrying the current path so Login can return the
+// user to where they were.
+let unauthorizedHandled = false;
+function handleUnauthorized() {
+  api.clearSession();
+  if (unauthorizedHandled) return;
+  if (window.location.pathname.startsWith("/login")) return;
+  unauthorizedHandled = true;
+  const next = encodeURIComponent(
+    window.location.pathname + window.location.search
+  );
+  window.location.assign(`/login?next=${next}`);
+}
+
+// Auth header bundle for the raw-fetch paths that bypass request().
+function authHeaders() {
+  const headers = {};
+  const token = api.getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
 // ---------------------------------------------------------------------------
 // Field normalization
 // ---------------------------------------------------------------------------
-function normalizeStatus(status) {
+function normalizeStatus(status, inspection = {}) {
   const normalized = String(status || "").toLowerCase();
+  const hasCompletedPass = String(
+    inspection.overall_result ?? inspection.overallResult ?? ""
+  ).toUpperCase() === "PASS";
+
+  // Empty violations are also returned while asynchronous processing is still
+  // running, so only an explicit PASS can resolve a pending record as clear.
+  if (
+    (normalized === "processing" || normalized === "pending") &&
+    hasCompletedPass
+  ) {
+    return "compliant";
+  }
+
   return normalized === "processing" ? "pending" : normalized;
 }
 
@@ -199,7 +237,7 @@ function normalizeInspectionSummary(item = {}) {
       item.category ||
       item.product?.category ||
       "General Pre-Packaged Commodity",
-    status: normalizeStatus(item.status),
+    status: normalizeStatus(item.status, item),
     imageUrl: item.image_path || item.image_url || item.imageUrl || null,
     annotatedImagePath: item.annotated_image_path || item.annotatedImagePath || null,
     annotatedImageUrl,
@@ -207,6 +245,10 @@ function normalizeInspectionSummary(item = {}) {
     violationsCount:
       item.violations_count ??
       (Array.isArray(item.violations) ? item.violations.length : item.violations ?? 0),
+    product: item.product || null,
+    inspector: item.inspector || null,
+    reviewer: item.reviewer || null,
+    reviewerId: item.reviewerId ?? null,
     createdAt: item.created_at || item.scannedAt || item.createdAt || null,
   };
 }
@@ -268,7 +310,13 @@ function normalizeInspectionDetail(detail = {}) {
         ? detail.ocr_result.face_images
         : Array.isArray(detail.ocrResult?.face_images)
           ? detail.ocrResult.face_images
-          : [];
+          // Compliance-listing endpoints return raw Prisma rows where the
+          // scan pipeline stores faces under rawOcrOutput, not ocr_result.
+          : Array.isArray(detail.rawOcrOutput?.face_images)
+            ? detail.rawOcrOutput.face_images
+            : Array.isArray(detail.raw_ocr_output?.face_images)
+              ? detail.raw_ocr_output.face_images
+              : [];
 
   return {
     ...normalizeInspectionSummary(detail),
@@ -297,7 +345,14 @@ const api = {
   isAuthenticated: () => !!localStorage.getItem("almac_token"),
   getUser: () => {
     const user = localStorage.getItem("almac_user");
-    return user ? JSON.parse(user) : null;
+    if (!user) return null;
+    try {
+      return JSON.parse(user);
+    } catch {
+      // A corrupted value must never crash the app during render.
+      localStorage.removeItem("almac_user");
+      return null;
+    }
   },
   setUser: (user) => localStorage.setItem("almac_user", JSON.stringify(user)),
   removeUser: () => localStorage.removeItem("almac_user"),
@@ -343,6 +398,21 @@ const api = {
     return data;
   },
 
+  // --- consumer complaints -------------------------------------------------
+  // Alias kept for existing callers — the two implementations had drifted
+  // into identical copies, so both names now hit the same scoped endpoint.
+  getComplaints: (page = 1, limit = 100, status) =>
+    api.getComplianceComplaints(page, limit, status),
+
+  fileComplaint: (complaint) =>
+    request("/compliance/complaints", { method: "POST", body: complaint }),
+
+  triageComplaint: (complaintId, updates) =>
+    request(`/compliance/complaints/${complaintId}/triage`, {
+      method: "PATCH",
+      body: updates,
+    }),
+
   // --- scans ---------------------------------------------------------------
   // Upload + scan a packaging image with progress
   // Upload + scan a packaging image with progress
@@ -354,6 +424,7 @@ const api = {
 
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${API_BASE_URL}/uploads/image?category=${encodeURIComponent(category)}`);
+      xhr.timeout = UPLOAD_TIMEOUT_MS;
       const token = api.getToken();
       if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
 
@@ -373,7 +444,7 @@ const api = {
           cacheScanResult(data);
           resolve(data);
         } else {
-          if (xhr.status === 401) api.clearSession();
+          if (xhr.status === 401) handleUnauthorized();
           reject(
             new Error(
               data?.message || `Scan failed with status ${xhr.status}`
@@ -381,6 +452,8 @@ const api = {
           );
         }
       };
+      xhr.ontimeout = () =>
+        reject(new Error("Scan upload timed out. Check your connection and try again."));
       xhr.onerror = () =>
         reject(new Error("Cannot reach the server. Make sure the backend is running."));
       xhr.send(formData);
@@ -393,6 +466,7 @@ const api = {
       formData.append("category", category);
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${API_BASE_URL}/uploads/images?category=${encodeURIComponent(category)}`);
+      xhr.timeout = UPLOAD_TIMEOUT_MS;
       const token = api.getToken();
       if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
       xhr.upload.onprogress = (event) => {
@@ -405,9 +479,11 @@ const api = {
           cacheScanResult(data);
           resolve(data);
         } else {
+          if (xhr.status === 401) handleUnauthorized();
           reject(new Error(data?.message || `Image batch scan failed with status ${xhr.status}`));
         }
       };
+      xhr.ontimeout = () => reject(new Error("Batch upload timed out. Check your connection and try again."));
       xhr.onerror = () => reject(new Error("Cannot reach the server. Make sure the backend is running."));
       xhr.send(formData);
     }),
@@ -433,13 +509,13 @@ const api = {
 
         try {
           const detail = await api.getScanById(scanId);
-          const normalized = normalizeStatus(detail?.status);
+          const normalized = normalizeStatus(detail?.status, detail);
           if (normalized === "compliant" || normalized === "non_compliant" || detail?.status === "COMPLIANT" || detail?.status === "NON_COMPLIANT") {
             const result = {
               source: "node-server",
               scan_id: detail.scan_id || scanId,
-              status: detail.status,
-              overall_result: (detail.status === "COMPLIANT" || detail.status === "compliant") ? "PASS" : "FAIL",
+              status: normalized,
+              overall_result: normalized === "compliant" ? "PASS" : "FAIL",
               compliance_score: detail.compliance_score ?? detail.complianceScore ?? 0,
               product_name: detail.product_name,
               category: detail.category || category,
@@ -470,7 +546,9 @@ const api = {
             throw new Error(detail?.raw_ocr_output?.error || detail?.rawOcrOutput?.error || "Inspection scan failed processing");
           }
         } catch (pollErr) {
-          if (pollErr.message && !pollErr.message.includes("404")) {
+          // A 404 while polling just means the record is not visible yet —
+          // keep polling. Anything else aborts the scan.
+          if (!pollErr.notFound) {
             throw pollErr;
           }
         }
@@ -490,6 +568,7 @@ const api = {
           method: "POST",
           headers,
           body: formData,
+          signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
         }
       );
 
@@ -521,6 +600,7 @@ const api = {
         {
           method: "POST",
           body: directForm,
+          signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
         }
       );
 
@@ -538,6 +618,7 @@ const api = {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ocr_result: ocrData, ruleset: null }),
+          signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
         }
       );
 
@@ -587,6 +668,7 @@ const api = {
       formData.append("file", file);
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${API_BASE_URL}/video/frames`);
+      xhr.timeout = VIDEO_TIMEOUT_MS;
       const token = api.getToken();
       if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
       xhr.upload.onprogress = (e) => {
@@ -599,9 +681,11 @@ const api = {
           cacheScanResult(data);
           resolve(data);
         } else {
+          if (xhr.status === 401) handleUnauthorized();
           reject(new Error(data?.message || `Video scan failed with status ${xhr.status}`));
         }
       };
+      xhr.ontimeout = () => reject(new Error("Video upload timed out. Try a smaller file or a faster connection."));
       xhr.onerror = () => reject(new Error("Cannot reach the server. Make sure the backend is running."));
       xhr.send(formData);
     }),
@@ -686,6 +770,11 @@ const api = {
       return normalizeInspectionDetail(data);
     }),
 
+  getComplianceInspection: (inspectionId) =>
+    request(`/compliance/inspections/${inspectionId}`).then((data) =>
+      normalizeInspectionDetail(data?.inspection || data)
+    ),
+
   peekInspection: (scanId) => cachePeek(`/uploads/${scanId}`),
 
   subscribeInspection: (scanId, cb) => subscribe(`/uploads/${scanId}`, cb),
@@ -695,22 +784,58 @@ const api = {
     const headers = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    const response = await fetch(`${NODE_API_BASE}/uploads/${scanId}`, { headers });
+    const response = await fetch(`${NODE_API_BASE}/uploads/${scanId}`, {
+      headers,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
     if (!response.ok) {
-      throw new Error(`Failed to retrieve inspection ${scanId}`);
+      // The .notFound flag lets pollUntilReady keep polling through 404s
+      // (the record is simply not visible yet) instead of aborting the scan.
+      const err = new Error(`Failed to retrieve inspection ${scanId}`);
+      err.notFound = response.status === 404;
+      throw err;
     }
     return await response.json();
+  },
+
+  // Downloads a report URL as a file (blob keeps the browser from navigating
+  // away and lets us set a clean filename). Falls back to opening the URL
+  // when the host blocks cross-origin blob reads.
+  downloadFile: async (url, filename) => {
+    if (!url) throw new Error("No report file is available for this inspection yet.");
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!response.ok) throw new Error(`Download failed with status ${response.status}`);
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = filename || "report.pdf";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
+    } catch {
+      // Cross-origin restrictions or network issue — open in a new tab so the
+      // user can still save the file manually.
+      window.open(url, "_blank", "noopener");
+    }
   },
 
   // Statutory citations
   getCitations: async () => {
     try {
-      const response = await fetch(`${NODE_API_BASE}/compliance/citations`);
+      const response = await fetch(`${NODE_API_BASE}/compliance/citations`, {
+        headers: authHeaders(),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
       if (response.ok) return await response.json();
     } catch {
       // Fallback direct
     }
-    const directRes = await fetch(`${FASTAPI_BASE}/compliance/citations`);
+    const directRes = await fetch(`${FASTAPI_BASE}/compliance/citations`, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
     if (!directRes.ok) throw new Error("Failed to fetch statutory citations");
     return await directRes.json();
   },
@@ -718,12 +843,17 @@ const api = {
   searchCitations: async (query, topK = 3) => {
     const q = encodeURIComponent(query);
     try {
-      const response = await fetch(`${NODE_API_BASE}/compliance/citations-search?q=${q}&top_k=${topK}`);
+      const response = await fetch(`${NODE_API_BASE}/compliance/citations-search?q=${q}&top_k=${topK}`, {
+        headers: authHeaders(),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
       if (response.ok) return await response.json();
     } catch {
       // Fallback direct
     }
-    const directRes = await fetch(`${FASTAPI_BASE}/compliance/citations-search?q=${q}&top_k=${topK}`);
+    const directRes = await fetch(`${FASTAPI_BASE}/compliance/citations-search?q=${q}&top_k=${topK}`, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
     if (!directRes.ok) throw new Error("Failed to search statutory corpus");
     return await directRes.json();
   },
@@ -731,14 +861,83 @@ const api = {
   getActiveRules: async (category = "general") => {
     const cat = encodeURIComponent(category);
     try {
-      const response = await fetch(`${NODE_API_BASE}/compliance/rules?category=${cat}`);
+      const response = await fetch(`${NODE_API_BASE}/compliance/rules?category=${cat}`, {
+        headers: authHeaders(),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
       if (response.ok) return await response.json();
     } catch {
       // Fallback direct
     }
-    const directRes = await fetch(`${FASTAPI_BASE}/compliance/rules?category=${cat}`);
+    const directRes = await fetch(`${FASTAPI_BASE}/compliance/rules?category=${cat}`, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
     if (!directRes.ok) throw new Error("Failed to fetch active compliance rules");
     return await directRes.json();
+  },
+
+  // --- role-scoped dashboard stats -----------------------------------------
+  getInspectorDashboard: () =>
+    request("/compliance/dashboard/inspector"),
+
+  getReviewerDashboard: () =>
+    request("/compliance/dashboard/reviewer"),
+
+  getControllerDashboard: () =>
+    request("/compliance/dashboard/jurisdiction"),
+
+  getDirectorDashboard: (days) =>
+    request(
+      `/compliance/dashboard/global${days ? `?days=${encodeURIComponent(days)}` : ""}`
+    ),
+
+  // Confirm/override an AI violation (REVIEWER). An empty `updates` call
+  // doubles as "Approve AI result" — the backend stamps the reviewer.
+  confirmViolation: (inspectionId, violationId, updates = {}) =>
+    request(`/compliance/inspections/${inspectionId}/violations/${violationId}`, {
+      method: "PATCH",
+      body: updates,
+    }),
+
+  // Escalate an inspection to the Controller (REVIEWER)
+  escalateInspection: (inspectionId) =>
+    request(`/compliance/inspections/${inspectionId}/escalate`, {
+      method: "PATCH",
+    }),
+
+  approveInspection: (inspectionId) =>
+    request(`/compliance/inspections/${inspectionId}/approve`, {
+      method: "PATCH",
+    }),
+
+  // Create an INSPECTION_SUMMARY report (CONTROLLER/DIRECTOR)
+  createComplianceReport: (inspectionId) =>
+    request("/compliance/reports", {
+      method: "POST",
+      body: { inspectionId },
+    }),
+
+  // Compliance-scoped inspections (honours RBAC data scoping per role)
+  getComplianceInspections: (page = 1, limit = 20, status) => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (status && status !== "ALL") params.set("status", status);
+    return request(`/compliance/inspections?${params.toString()}`).then((data) => {
+      const rawItems = Array.isArray(data) ? data : data?.items || [];
+      return {
+        page: data?.page ?? page,
+        limit: data?.limit ?? limit,
+        total: data?.total ?? rawItems.length,
+        total_pages: data?.total_pages ?? Math.ceil(rawItems.length / limit),
+        items: rawItems.map(normalizeInspectionSummary),
+      };
+    });
+  },
+
+  // Compliance-scoped complaints (honours RBAC data scoping per role)
+  getComplianceComplaints: (page = 1, limit = 20, status) => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (status && status !== "ALL") params.set("status", status);
+    return request(`/compliance/complaints?${params.toString()}`);
   },
 };
 

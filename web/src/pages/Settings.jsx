@@ -6,11 +6,26 @@ export default function Settings() {
   const [user, setUser] = useState(api.getUser());
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  // Hydrate from /auth/me so token-only sessions and edits made elsewhere
+  // are reflected instead of showing a stale localStorage snapshot.
+  useEffect(() => {
+    api.getMe()
+      .then((data) => {
+        if (data?.user) {
+          api.setUser(data.user);
+          setUser(data.user);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
     setMessage('');
+    setError('');
     try {
       const updated = await api.updateProfile({
         fullName: e.target.fullName.value,
@@ -21,7 +36,7 @@ export default function Settings() {
       setUser(updated.user);
       setMessage('Profile updated successfully!');
     } catch (err) {
-      setMessage(err.message || 'Failed to update profile');
+      setError(err.message || 'Failed to update profile');
     } finally {
       setSaving(false);
     }
@@ -85,6 +100,9 @@ export default function Settings() {
 
             {message && (
               <div className="p-3 rounded-lg bg-success-container text-on-success-container text-sm">{message}</div>
+            )}
+            {error && (
+              <div className="p-3 rounded-lg bg-error-container text-on-error-container text-sm">{error}</div>
             )}
 
             <button

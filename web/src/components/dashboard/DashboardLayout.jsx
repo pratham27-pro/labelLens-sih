@@ -1,15 +1,36 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import api from '../../services/api';
 import logo from '../../assets/logo.png';
 
+// `roles: null` → visible to every role; otherwise only listed roles see it.
+const NAV_ITEMS = [
+  { name: 'Dashboard', path: '/dashboard', icon: 'dashboard', roles: null },
+  { name: 'New Scan', path: '/dashboard/scan', icon: 'add_a_photo', roles: ['INSPECTOR', 'MANUFACTURER'] },
+  { name: 'Inspections', path: '/dashboard/inspections', icon: 'fact_check', roles: ['DIRECTOR', 'INSPECTOR', 'MANUFACTURER', 'CONSUMER'] },
+  { name: 'Escalation Hub', path: '/dashboard/escalation-hub', icon: 'crisis_alert', roles: ['CONTROLLER'] },
+  { name: 'Validation Queue', path: '/dashboard/validation-queue', icon: 'manage_search', roles: ['REVIEWER'] },
+  { name: 'Complaints', path: '/dashboard/complaints', icon: 'gavel', roles: ['CONSUMER', 'INSPECTOR', 'REVIEWER', 'CONTROLLER', 'DIRECTOR'] },
+  { name: 'Reports', path: '/dashboard/reports', icon: 'description', roles: ['INSPECTOR', 'REVIEWER', 'CONTROLLER', 'DIRECTOR'] },
+  { name: 'Settings', path: '/dashboard/settings', icon: 'settings', roles: null },
+];
+
 export default function DashboardLayout({ children }) {
   const location = useLocation();
   const navigate = useNavigate();
+  // Live user: follows the /auth/me cache so profile edits and role changes
+  // reflect in the sidebar without a reload.
   const [user, setUser] = useState(api.getUser());
   const [lineStyle, setLineStyle] = useState({ top: 0, height: 0 });
   const [notifications, setNotifications] = useState([]);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+
+  useEffect(() => {
+    setUser(api.getUser());
+    return api.subscribeMe((d) => {
+      if (d?.user) setUser(d.user);
+    });
+  }, []);
 
   const handleLogout = () => {
     api.removeToken();
@@ -17,18 +38,16 @@ export default function DashboardLayout({ children }) {
     navigate('/');
   };
 
-  const navItems = [
-    { name: 'Dashboard', path: '/dashboard', icon: 'dashboard' },
-    { name: 'New Scan', path: '/dashboard/scan', icon: 'add_a_photo' },
-    { name: 'Inspections', path: '/dashboard/inspections', icon: 'fact_check' },
-    { name: 'Reports', path: '/dashboard/reports', icon: 'description' },
-    { name: 'Settings', path: '/dashboard/settings', icon: 'settings' }
-  ];
+  const role = user?.role?.toUpperCase();
+  const navItems = useMemo(
+    () => NAV_ITEMS.filter((item) => !item.roles || item.roles.includes(role)),
+    [role]
+  );
 
-  const isActive = (path) => {
+  const isActive = useCallback((path) => {
     if (path === '/dashboard') return location.pathname === '/dashboard';
     return location.pathname.startsWith(path);
-  };
+  }, [location.pathname]);
 
   const moveLine = (element) => {
     if (element) {
@@ -57,7 +76,7 @@ export default function DashboardLayout({ children }) {
         });
       }, 50);
     }
-  }, [location.pathname]);
+  }, [isActive, navItems]);
 
   useEffect(() => {
     const handleReady = (event) => {
@@ -65,7 +84,16 @@ export default function DashboardLayout({ children }) {
       if (!ready.length) return;
       setNotifications((current) => [...ready.map((scan) => ({ id: scan.id, status: scan.status })), ...current]);
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        ready.forEach((scan) => new Notification('Inspection result is ready', { body: `Scan ${scan.id.slice(0, 8)} is ${scan.status.replace('_', ' ')}.` }));
+        ready.forEach((scan) => {
+          if (!scan?.id) return;
+          const violations = scan.violationsCount ?? scan.violations?.length ?? 0;
+          const isCompliant = String(scan.status).toLowerCase() === 'compliant';
+          const title = isCompliant ? 'Compliance complete' : 'Non-compliance detected';
+          const body = isCompliant
+            ? `Scan ${scan.id.slice(0, 8)} completed successfully.`
+            : `Scan ${scan.id.slice(0, 8)} has ${violations} violation${violations === 1 ? '' : 's'}.`;
+          new Notification(title, { body });
+        });
       }
     };
     window.addEventListener('almac:scan-results-ready', handleReady);
@@ -165,9 +193,6 @@ export default function DashboardLayout({ children }) {
             </button>
             {notificationsOpen && <div className="absolute right-0 top-12 w-80 rounded-xl bg-white shadow-xl border border-slate-200 p-3 z-50"><div className="flex justify-between items-center mb-2"><p className="font-semibold text-slate-900">Notifications</p><button onClick={() => setNotifications([])} className="text-xs text-primary">Clear</button></div>{notifications.length ? notifications.map((notice, index) => <Link key={`${notice.id}-${index}`} to={`/dashboard/inspections/${notice.id}`} onClick={() => setNotificationsOpen(false)} className="block p-3 rounded-lg hover:bg-slate-50 text-sm text-slate-700">Inspection result is ready<br /><span className="text-xs text-slate-500 capitalize">{notice.status.replace('_', ' ')}</span></Link>) : <p className="p-3 text-sm text-slate-500">No new results.</p>}</div>}
             </div>
-            <button className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200 transition-all">
-              <span className="material-symbols-outlined text-[20px]">help</span>
-            </button>
           </div>
         </header>
 

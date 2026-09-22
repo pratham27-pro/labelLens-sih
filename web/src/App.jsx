@@ -11,24 +11,50 @@ import NewScan from './pages/NewScan';
 import Inspections from './pages/Inspections';
 import InspectionDetail from './pages/InspectionDetail';
 import Reports from './pages/Reports';
+import Complaints from './pages/Complaints';
 import Settings from './pages/Settings';
-import InspectorConsole from './pages/InspectorConsole';
-import api from './services/api';
+import ReviewerDashboard from './pages/ReviewerDashboard';
+import ControllerDashboard from './pages/ControllerDashboard';
+import NotFound from './pages/NotFound';
 
-function ProtectedRoute({ children }) {
+// Decodes the JWT payload without verification (signature is validated
+// server-side) — enough to know expiry and role for routing decisions.
+function decodeTokenPayload(token) {
+  try {
+    const payload = token.split('.')[1];
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return null;
+  }
+}
+
+function getTokenClaims() {
+  const token = localStorage.getItem('almac_token');
+  if (!token) return null;
+  const claims = decodeTokenPayload(token);
+  if (!claims) return null;
+  // Expired tokens are treated as unauthenticated.
+  if (claims.exp && claims.exp * 1000 < Date.now()) return null;
+  return claims;
+}
+
+function ProtectedRoute({ children, roles }) {
   const location = useLocation();
-  const isAuth = api.isAuthenticated();
+  const claims = getTokenClaims();
 
-  if (!isAuth) {
+  if (!claims) {
     return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+  if (roles && !roles.includes(String(claims.role || '').toUpperCase())) {
+    return <Navigate to="/dashboard" replace />;
   }
 
   return children;
 }
 
 function PublicAuthRoute({ children }) {
-  const isAuth = api.isAuthenticated();
-  if (isAuth) {
+  const claims = getTokenClaims();
+  if (claims) {
     return <Navigate to="/dashboard" replace />;
   }
   return children;
@@ -75,26 +101,26 @@ function App() {
           }
         />
         <Route
-          path="/dashboard/console"
-          element={
-            <ProtectedRoute>
-              <InspectorConsole />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/console"
-          element={
-            <ProtectedRoute>
-              <InspectorConsole />
-            </ProtectedRoute>
-          }
-        />
-        <Route
           path="/dashboard/inspections"
           element={
             <ProtectedRoute>
               <Inspections />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/dashboard/escalation-hub"
+          element={
+            <ProtectedRoute roles={['CONTROLLER']}>
+              <ControllerDashboard mode="hub" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/dashboard/validation-queue"
+          element={
+            <ProtectedRoute roles={['REVIEWER']}>
+              <ReviewerDashboard mode="queue" />
             </ProtectedRoute>
           }
         />
@@ -109,8 +135,16 @@ function App() {
         <Route
           path="/dashboard/reports"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute roles={['INSPECTOR', 'REVIEWER', 'CONTROLLER', 'DIRECTOR']}>
               <Reports />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/dashboard/complaints"
+          element={
+            <ProtectedRoute>
+              <Complaints />
             </ProtectedRoute>
           }
         />
@@ -122,6 +156,7 @@ function App() {
             </ProtectedRoute>
           }
         />
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
   );

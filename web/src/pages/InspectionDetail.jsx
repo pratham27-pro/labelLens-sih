@@ -1,17 +1,24 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useLocation } from 'react-router-dom';
 import api from '../services/api';
 import DashboardLayout from '../components/dashboard/DashboardLayout';
 import InspectionReportModal, { resolveDeclarationInfo } from '../components/InspectionReportModal';
 
 export default function InspectionDetail() {
   const { id } = useParams();
+  const location = useLocation();
   const [inspection, setInspection] = useState(() => api.peekInspection(id)?.data ?? null);
   const [loading, setLoading] = useState(() => !api.peekInspection(id));
   const [error, setError] = useState('');
   const [activeImageTab, setActiveImageTab] = useState('annotated');
   const [activeFaceIndex, setActiveFaceIndex] = useState(0);
   const [showReportModal, setShowReportModal] = useState(false);
+  const role = api.getUser()?.role?.toUpperCase();
+  const backPath = location.state?.from || (role === 'REVIEWER'
+    ? '/dashboard/validation-queue'
+    : role === 'CONTROLLER'
+      ? '/dashboard/escalation-hub'
+      : '/dashboard/inspections');
 
   useEffect(() => {
     const unsubscribe = api.subscribeInspection(id, (d) => {
@@ -96,9 +103,9 @@ export default function InspectionDetail() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <Link to="/dashboard/inspections" className="inline-flex items-center gap-1 text-sm text-on-surface-variant hover:text-primary mb-2 transition-colors">
+            <Link to={backPath} className="inline-flex items-center gap-1 text-sm text-on-surface-variant hover:text-primary mb-2 transition-colors">
               <span className="material-symbols-outlined text-[16px]">arrow_back</span>
-              Back to Inspections
+              {backPath === '/dashboard/validation-queue' ? 'Back to Validation Queue' : 'Back to Inspections'}
             </Link>
             <h1 className="text-3xl font-bold text-on-surface">{productName}</h1>
             <div className="flex items-center gap-2 mt-1 flex-wrap text-xs">
@@ -119,14 +126,15 @@ export default function InspectionDetail() {
                 Download / Print PDF Report
               </button>
               <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold ${
-                inspection.status === 'compliant' ? 'bg-success-container text-on-success-container' :
+                isCompliant ? 'bg-success-container text-on-success-container' :
                 inspection.status === 'pending' ? 'bg-secondary-container text-on-secondary-container' :
+                inspection.status === 'escalated' ? 'bg-red-100 text-red-700' :
                 'bg-error-container text-on-error-container'
               }`}>
                 <span className="material-symbols-outlined text-[18px]">
-                  {inspection.status === 'compliant' ? 'check_circle' : inspection.status === 'pending' ? 'hourglass_top' : 'error'}
+                  {isCompliant ? 'check_circle' : inspection.status === 'pending' ? 'hourglass_top' : inspection.status === 'escalated' ? 'crisis_alert' : 'gpp_bad'}
                 </span>
-                {inspection.status === 'compliant' ? '100% Compliant' : inspection.status === 'pending' ? 'Waiting for result' : inspection.status === 'failed' ? 'Processing failed' : 'Violations Found'}
+                {isCompliant ? '100% Compliant' : inspection.status === 'pending' ? 'Waiting for result' : inspection.status === 'escalated' ? 'Escalated to Controller' : inspection.status === 'failed' ? 'Processing failed' : 'Violations Found'}
               </span>
             </div>
           )}
@@ -137,7 +145,7 @@ export default function InspectionDetail() {
           <div className="bg-surface-container-lowest rounded-2xl p-16 text-center border border-outline-variant/30">
             <span className="material-symbols-outlined text-6xl text-on-surface-variant/30 mb-4 block">search_off</span>
             <h3 className="text-xl font-semibold text-on-surface mb-2">{error || 'Inspection not found'}</h3>
-            <Link to="/dashboard/inspections" className="text-primary font-medium hover:underline">Back to inspections</Link>
+                <Link to={backPath} className="text-primary font-medium hover:underline">Back to {backPath === '/dashboard/validation-queue' ? 'validation queue' : 'inspections'}</Link>
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -185,7 +193,7 @@ export default function InspectionDetail() {
                   <p className="text-xs text-on-surface-variant mt-0.5">
                     {activeImageTab === 'annotated'
                       ? 'AI Bounding Boxes highlighting detected declarations and violations'
-                      : 'Raw packaging capture archived on Cloudinary'}
+                      : 'Raw packaging capture archived in secure evidence storage'}
                   </p>
                 </div>
 
@@ -285,9 +293,9 @@ export default function InspectionDetail() {
                             <span className="font-mono text-xs font-semibold text-primary truncate max-w-[200px]" title={decl.extractedValue}>
                               {decl.extractedValue}
                             </span>
-                            <span className="flex-shrink-0 inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-full">
-                              <span className="material-symbols-outlined text-xs">check_circle</span>
-                              Verified
+                            <span className={`flex-shrink-0 inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${decl.isCompliant ? 'text-emerald-700 bg-emerald-100/70' : 'text-red-700 bg-red-100/70'}`}>
+                              <span className="material-symbols-outlined text-xs">{decl.isCompliant ? 'check_circle' : 'gpp_bad'}</span>
+                              {decl.isCompliant ? 'Verified' : 'Non-Compliant'}
                             </span>
                           </div>
                         </div>

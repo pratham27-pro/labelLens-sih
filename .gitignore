@@ -57,3 +57,6 @@ server/data/extracted_english/*.json
 
 # Local test / regression datasets
 dataset/ocr_regression/
+.zcode/
+.zcodeignore
+web/FRONTEND_AUDIT.md
